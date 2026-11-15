@@ -119,8 +119,8 @@ class FreqPlot(tk.Canvas):
         logx = self.logx and min(q[0] for q in pts) > 0
         xmin, xmax = min(q[0] for q in pts), max(q[0] for q in pts)
         ymin, ymax = min(q[1] for q in pts), max(q[1] for q in pts)
-        if xmax == xmin:
-            xmin, xmax = xmin - .5, xmax + .5
+        if xmax == xmin:   # single frequency: widen multiplicatively so a log axis stays positive
+            xmin, xmax = (xmin / 1.25, xmax * 1.25) if xmin > 0 else (xmin - .5, xmax + .5)
         yr = ymax - ymin
         if yr <= max(abs(ymin), abs(ymax)) * 1e-10:
             yr = max(abs(ymax) * .1, 1e-9)

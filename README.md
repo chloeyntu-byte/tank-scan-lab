@@ -22,7 +22,7 @@ A desktop workbench for LC-tank startup analysis: place an N-port inductor, a sw
 **Resonance / tank mode** (the former Resonance and Tank scan modes, merged; old pages open in it)
 
 - Tick what the canvas contains (inductor / N-port, cap array, gm core) to pick the **passive** or **active** backend. Per code: f0, LC-only f0, Rp(LC), Rp(LC+loading), terminal gm/gds, G_neg, startup margin, loop gain, Q, C_eff/L_eff.
-- **Module loss split:** per-module share of G_loss at f0 from native module currents; untick it for a fast resonance-only run (f0, Z11, Rp = Re Z).
+- **Module loss split:** per-module share of G_loss at f0 from native module currents; untick it (possible without a gm core) for a fast resonance-only run (f0, Z11, Rp = Re Z).
 - **Optional port 2** (pin roles P2 / N2): four-port SP, Z21, and transformer-coupled cores with their gates on port 2, whose loop gain is **gm·Z21**. Transformer tanks with two resonances use the one with the larger margin.
 - **Plot manager:** any number of plot tabs, each with a quantity and an x axis: per-code values, |Z11| / phase / Re / Im and |Z21| versus frequency, loop gain |T|, loss share by module. Click a curve to select its table row (and the reverse); hover for x / y. KPI tiles, plots left, results and loss tables right, all dividers draggable.
 - **Refine sweep at each f0:** adds a 0.1 % step band around every code's f0 (overlapping windows merged) for bracket-level accuracy.

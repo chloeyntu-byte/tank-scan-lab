@@ -248,3 +248,26 @@ class Refinement(unittest.TestCase):
         self.assertNotIn('bracket', r.get('warning') or '')
         self.assertAlmostEqual(r['f0_Hz'] / f0, 1, places=6)
         self.assertEqual(tank_scan.refine_centers([{'tank': r}]), [round(r['f0_Hz'], 3)])
+
+
+class ReviewFixes(unittest.TestCase):
+    def test_refinement_keeps_base_endpoints(self):
+        from caplab.spectrum import simulation_grid
+        g = simulation_grid({'frequencies': '2G', 'simulation_start': '1G', 'simulation_stop': '2G', 'simulation_points': 2,
+                             'simulation_sweep': 'linear', 'tank_refine': [2e9 / 1.006 * (1 - 1e-10)]})
+        self.assertEqual(g[-1], 2e9)
+        self.assertEqual(g[0], 1e9)
+        self.assertEqual(g, sorted(set(g)))
+
+    def test_resonance_on_a_sample_counted_once(self):
+        from caplab.resonance import find_resonances
+        rows = []
+        for f, b in ((1e9, -0.001), (2e9, 0.0), (3e9, 0.001)):
+            row = {'frequency_Hz': f}
+            for key, v in (('11', complex(0.001, b)), ('12', -0.0005), ('21', -0.0005), ('22', complex(0.001, b))):
+                v = complex(v)
+                row['Y%s_G_S' % key], row['Y%s_B_S' % key] = v.real, v.imag
+            rows.append(row)
+        found = [r for r in find_resonances(rows) if r.get('available')]
+        self.assertEqual(len(found), 1)
+        self.assertAlmostEqual(found[0]['frequency_Hz'], 2e9)

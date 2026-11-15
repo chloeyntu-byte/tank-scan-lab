@@ -3,14 +3,19 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'caplab/z11'))
-import numpy as np
-from network_model import example_document
-from network_model_v2 import solve
-from z11_model import z11
-from optimizer import TraceScore
-from z11_schematic import build_plan, serialize_skill
+try:
+    import numpy as np
+    from network_model import example_document
+    from network_model_v2 import solve
+    from z11_model import z11
+    from optimizer import TraceScore
+    from z11_schematic import build_plan, serialize_skill
+    HAVE_Z11 = True
+except ImportError:  # optional Z11 Studio dependencies (requirements-z11.txt)
+    HAVE_Z11 = False
 
 
+@unittest.skipUnless(HAVE_Z11, 'optional Z11 dependencies (NumPy) are not installed')
 class Z11NumericTest(unittest.TestCase):
     def test_nodal_solution_matches_closed_form(self):
         doc=example_document();frequency=np.linspace(.1,30,101)

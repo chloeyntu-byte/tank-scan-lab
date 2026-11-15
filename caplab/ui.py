@@ -1072,8 +1072,9 @@ class App(tk.Tk):
         if self.sim_jobs:self.error('Stop active simulations before replacing the workbook. Page editing and saving remain available.');return
         self.book=p if prepared else workbook(p);self.book.setdefault('appearance',{'canvas':'black','plot':'neon' if self.tank_app else 'black'})
         if self.tank_app:
-            # the Dark / Light choice belongs to the window; it also sets the canvas and plot themes
-            self.set_ui_theme(getattr(self,'ui_palette_name','dark'))
+            # restore the theme saved in the opened workbook (the window's current theme if it has none)
+            saved=self.book['appearance'].get('ui')
+            self.set_ui_theme(saved if saved in ('dark','light') else getattr(self,'ui_palette_name','dark'))
         else:
             self.canvas_theme.set(self.book['appearance']['canvas'].title());self.set_canvas_theme()
             self.plot_theme.set(self.book['appearance']['plot'].title());self.set_plot_theme()

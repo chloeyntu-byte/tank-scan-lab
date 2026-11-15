@@ -97,7 +97,10 @@ def _scan(samples, out, first_only):
         scale = max(abs(za), abs(zb), abs(z), 1e-300)
         if abs(z.imag) > 1e-8 * scale:
             continue
-        out.append({'available': True, 'frequency_Hz': xs[i] + t * (xs[i+1] - xs[i]),
+        f_found = xs[i] + t * (xs[i+1] - xs[i])
+        if out and abs(out[-1]['frequency_Hz'] - f_found) <= 1e-12 * f_found:
+            continue  # a zero exactly on a shared sample is found from both sides; count it once
+        out.append({'available': True, 'frequency_Hz': f_found,
                     'Z_real_ohm': z.real, 'Z_imag_ohm': z.imag,
                     'kind': 'series-like' if zb.imag > za.imag else 'parallel-like',
                     'bracket_Hz': [xs[i], xs[i+1]], 'estimated': True,

@@ -179,3 +179,33 @@ class LimCore(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MixedCores(unittest.TestCase):
+    def test_local_and_port2_cores_sum_per_path(self):
+        import tests.test_tank_port2 as T
+        base = T.modules
+
+        def both(f, v, gm=GM, gates=(3, 2)):
+            out = base(f, v, gm, gates)
+            d1, d2 = gm * v[1], gm * v[0]          # second core: gates on the opposite drains
+            out['GML'] = [('DP', 'CAL_P', v[0], d1), ('DN', 'CAL_N', v[1], d2), ('S', 'CAL_VSS', 0j, -d1 - d2)]
+            return out
+        T.modules = both
+        try:
+            freqs = [10e6] + [1e9 + k * 10e6 for k in range(1901)]
+            plan, loss, spectrum = T.records(freqs)
+            plan['instances'].append({'id': 'GML', 'kind': None, 'cell': 'pair'})
+            roles = dict(ROLES, GML='gm')
+            r = tank_scan.analyze_point(spectrum, loss, plan, roles, 'active', sweep_start=1e9)
+            self.assertTrue(r['available'], r.get('reason'))
+            y = T.matrix(r['f0_Hz'])
+            off = [row[:] for row in y]
+            off[0][3] -= GM; off[1][2] -= GM          # port-2 core
+            off[0][1] -= GM; off[1][0] -= GM          # local core
+            z11, z21 = twoport.z_pair(off)
+            expect = GM * z21.real + GM * z11.real
+            self.assertEqual(r['gain_kind'], 'gm*Z11 + gm*Z21')
+            self.assertAlmostEqual(r['gain'] / expect, 1, places=2)  # 10 MHz grid: interpolation near resonance
+        finally:
+            T.modules = base

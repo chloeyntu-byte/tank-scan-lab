@@ -796,7 +796,10 @@ unless(maeCreateTest("CAP_AC" ?lib %s ?cell %s ?view "config" ?simulator "spectr
         body += 'ts=maeGetTestSession("CAP_AC" ?session s)\n'
         body += 'asiSetKeepOptionVal(ts \'save "allpub")\nasiSetKeepOptionVal(ts \'currents "selected")\nunless(asiGetKeepOptionVal(ts \'save)=="allpub" && asiGetKeepOptionVal(ts \'currents)=="selected" error("Saving readback mismatch"))\n'
         y = "ypm('sp 1 1)" if cfg.get('analysis') == 'sp' else '-(i("/VP/PLUS" ?result "ac")-i("/VN/PLUS" ?result "ac"))/2'
-        for idx, freq in enumerate(cfg['frequencies']):
+        # With port 2 the upper-left 2x2 of the 4-port Y is port 1 with port 2 SHORTED; the tool's one-port
+        # results are port 1 with port 2 OPEN (Kron reduction of SPECTRUM4 in Python).  Do not create
+        # Maestro scalars with the other termination; every one-port value comes from the saved 4-port matrix.
+        for idx, freq in enumerate([] if cfg.get('port2') else cfg['frequencies']):
             # Save G and B as well: Q is undefined at exactly zero real conductance.
             expressions = {}
             if cfg.get('decomposition'):
@@ -1129,7 +1132,7 @@ maeSaveSetup(?session s) maeCloseSession(?session s)
             log = next((p for p in logs if p.is_file()), None)
             if not log or not re.search(r'0 errors?\b', log.read_text(errors='replace')) or 'completes' not in log.read_text(errors='replace'):
                 raise RuntimeError('Code {} has no successful zero-error Spectre completion.'.format(t['code']))
-            for idx, freq in enumerate(cfg['frequencies']):
+            for idx, freq in enumerate([] if cfg.get('port2') else cfg['frequencies']):
                 outputs = t['outputs']
                 if not all('{}_{}'.format(key, idx) in outputs for key in ('C', 'G', 'B')):
                     raise RuntimeError('C/Q evaluation is incomplete for code {}.'.format(t['code']))
@@ -1170,6 +1173,11 @@ maeSaveSetup(?session s) maeCloseSession(?session s)
                 row.update(frequency_Hz=freq,C_F=c,Q=q,G_S=y.real,B_S=y.imag,status=status)
                 rows.append(row)
         key='point' if cfg.get('explicit') else 'code'
+        if cfg.get('port2'):
+            # Identity, bias and completion were checked per point; values come from the 4-port spectrum.
+            if {int(t['code']) for t in tests} != set(cfg['codes']):
+                raise RuntimeError('Returned scan points do not match the request.')
+            return []
         expected = {(c, f) for c in cfg['codes'] for f in cfg['frequencies']}
         if {(r[key], r['frequency_Hz']) for r in rows} != expected or len(rows) != len(expected):
             raise RuntimeError('Returned sample count does not match the request; incomplete curves were withheld.')

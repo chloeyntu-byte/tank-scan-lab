@@ -75,13 +75,19 @@ def with_refinement(grid, settings):
         from .model import frequencies
         centers = frequencies(centers)
     lo, hi = grid[0], grid[-1]
+    base = sorted(set(grid))
     extra = refinement_points(centers, lo, hi)
-    merged = sorted(set(grid) | set(extra))
-    out = []
-    for f in merged:   # drop near-duplicates, never the base end points
-        if out and f - out[-1] <= 1e-9 * f:
-            continue
-        out.append(f)
+    import bisect
+
+    def near_base(f):  # a refinement point that coincides with a base point is dropped, never the base point
+        k = bisect.bisect_left(base, f)
+        return any(abs(base[j] - f) <= 1e-9 * f for j in (k - 1, k) if 0 <= j < len(base))
+    extra = sorted(f for f in extra if not near_base(f))
+    kept = []
+    for f in extra:    # near-duplicate refinement points among themselves
+        if not kept or f - kept[-1] > 1e-9 * f:
+            kept.append(f)
+    out = sorted(set(base) | set(kept))
     if len(out) > 10001:
         raise ValueError('Too many sweep points after f0 refinement; clear the refinement or use fewer base points.')
     return out

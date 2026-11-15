@@ -16,12 +16,12 @@ On the results tab the library and settings panels hide automatically (**Show se
 
 Port 1 is always the differential P/N port: the tank and the core's drains. Port 2 is optional: give two canvas pins the roles **P2** and **N2** (pin role list, or nets named P2 / N2). Typical uses are the gates of a transformer-coupled core (drains on the primary, gates on the secondary) or an output. Net names P2 / N2 are reserved for port 2.
 
-- SP then has four DC-blocked ground ports (P, N, P2, N2). One-port results (C/Q, f0, Z11, Rp, loss shares) are port 1 with **port 2 open**, so they mean the same as without port 2. With the module split (or a gm core), two more native excitations are run at port 2 (four in total).
+- SP then has four DC-blocked ground ports (P, N, P2, N2). Maestro's own per-frequency C/Q outputs are not created in this mode (the 2×2 corner of the four-port Y would be port 2 shorted); every one-port value comes from the saved four-port matrix. One-port results (C/Q, f0, Z11, Rp, loss shares) are port 1 with **port 2 open**, so they mean the same as without port 2. With the module split (or a gm core), two more native excitations are run at port 2 (four in total).
 - The gm core's admittance is identified on whichever of P, N, P2, N2 its pins touch:
   - gates tied to the opposite drains (inside the cell or on the canvas): loop gain **gm·Z11 = gm·Rp**;
   - gates exposed and connected to P2/N2: detected automatically (*gm gates: on port 2*); loop gain **gm·Z21**.
 - gm is cancelled the same way in both cases (real cross terms at the low reference frequency), so G_neg, G_loss, Rp(LC+loading) and margin are read at port 1 with port 2 open. Everything the gate side absorbs (secondary winding, gate-side capacitors, gate input loss) is part of G_loss and appears in the loss shares.
-- **Loop gain gm·Z21** = gm(f_ref) × Re Z21 of the gm-cancelled tank at f0 (drain current to gate voltage), from the saved four-port Y. A wrong gate polarity gives a negative gain. *V_gate / V_drain* = Re Z21 / Re Z11 (gm off).
+- **Loop gain gm·Z21** = gm(f_ref) × Re Z21 of the gm-cancelled tank at f0 (drain current to gate voltage), from the saved four-port Y. With both kinds of core on the canvas each core adds its own path (gm·Re Z11 for gates on P/N, gm·Re Z21 for gates on port 2). A wrong gate polarity gives a negative gain. *V_gate / V_drain* = Re Z21 / Re Z11 (gm off).
 - Transformer tanks can have two parallel resonances. With a gm core, f0 is the one with the larger startup margin and the status lists both.
 
 ## Plots
@@ -52,7 +52,7 @@ The gm core's own 2×2 admittance on the P/N nets is identified from the excitat
 
 | Quantity | Definition |
 |---|---|
-| f0 | First Im(Z)=0 of the complete circuit including the core (startup frequency) |
+| f0 | Im(Z11)=0 of the complete circuit including the core, port 2 open (startup frequency): the first crossing for a passive tank; with a gm core the parallel-resonance crossing with the largest startup margin (all crossings are listed) |
 | f0 LC only | Zero of the inductor + array susceptance (estimate, core capacitance removed) |
 | Rp(LC) | 1 / (G_inductor + G_array) at f0 |
 | Rp(LC+loading) | 1 / G_loss, G_loss = G_LC + other loads + core loading |
@@ -61,7 +61,7 @@ The gm core's own 2×2 admittance on the P/N nets is identified from the excitat
 | Startup margin | G_neg / G_loss; > 1 starts (≈ gm·Rp/2 for a symmetric pair) |
 | Loop gain gm·Z | gm(f_ref) × Rp(LC+loading) (= gm·Z11) for gates on P/N; gm(f_ref) × Re Z21 (gm off) for gates on port 2 |
 | gm·Rp | gm(f_ref) × Rp(LC+loading) |
-| gm, gds @f_ref / gm, g_load @f0 | Per side, at the core terminals, from the core's 2×2 P/N admittance |
+| gm, gds @f_ref / gm, g_load @f0 | Per side, at the core terminals, from the core's admittance on the nets it touches (P/N, plus P2/N2 with port 2): gates on P/N gm = Re(Y12+Y21)/2; gates on port 2 gm = the P2/N2→P/N transconductance; gds/g_load from the drain self terms |
 | Q LC, Q loaded, C_eff, L_eff | From the susceptance slope at resonance, C_eff = ½·dB/dω |
 
 Selecting a row lists each module (or coupled-winding group) with its loss conductance and share of G_loss at f0.

@@ -469,37 +469,41 @@ def _analyze_at(found, spectrum_samples, loss_samples, plan, roles, mode, sweep_
 def loop_gain(spectrum_samples, per, xs, lo, hi, t, gm_ref, res):
     """Startup loop gain gm * Z, as in the VCO design system's tank scan.
 
-    Gates on the opposite drains: Z = Z11 of the gm-cancelled tank = Rp(LC+loading),
-    so the gain is gm*Rp.  Gates on port 2 (transformer-coupled core): Z = Z21 of the
-    gm-cancelled tank (drain current -> gate voltage), from the saved 4-port Y with
-    the core's low-frequency cross terms removed.
+    Each gm module adds its own feedback path: gates on the opposite drains ->
+    gm * Z11 of the gm-cancelled tank = gm * Rp(LC+loading); gates on port 2
+    (transformer-coupled core) -> gm * Re Z21 of the gm-cancelled tank (drain
+    current -> gate voltage), from the saved 4-port Y with every core's
+    low-frequency cross terms removed.  Mixed cores are summed path by path.
     """
-    ctrl = next((item['ctrl'] for item in per[0]['gm'].values() if item['ctrl'] == (2, 3)), (0, 1))
-    if ctrl == (0, 1):
-        rp = res.get('Rp_loaded_ohm')
+    mods = per[0]['gm']
+    local = sum(item['gm_S'] for item in mods.values() if item['ctrl'] != (2, 3))
+    remote = sum(item['gm_S'] for item in mods.values() if item['ctrl'] == (2, 3))
+    rp = res.get('Rp_loaded_ohm')
+    if not any(item['ctrl'] == (2, 3) for item in mods.values()):
         return {'gain': gm_ref * rp if rp else None, 'gain_kind': 'gm*Z11', 'core_gates': 'on P/N'}
     from .twoport import has_port2, full_matrix, z_pair
+    kind = 'gm*Z21' if not local else 'gm*Z11 + gm*Z21'
+    gates = 'on port 2' if not local else 'on P/N and on port 2'
     pairs = []
     for k in (lo, hi):
         s = min(spectrum_samples or [{}], key=lambda r: abs(r.get('frequency_Hz', 0) - xs[k]))
-        if abs(s.get('frequency_Hz', 0) - xs[k]) > 1e-9 * xs[k]:
-            s = None
-        if s is None or not has_port2(s):
-            return {'gain_kind': 'gm*Z21', 'core_gates': 'on port 2',
+        if abs(s.get('frequency_Hz', 0) - xs[k]) > 1e-9 * xs[k] or not has_port2(s):
+            return {'gain_kind': kind, 'core_gates': gates,
                     'gain_reason': 'Saved spectrum has no port-2 matrix at the f0 bracket.'}
         y = full_matrix(s)
-        for item in per[0]['gm'].values():
+        for item in mods.values():
             yx = off_diagonal(item['Y'], real=True)
             for i in range(len(yx)):
                 for j in range(len(yx)):
                     y[i][j] -= yx[i][j]
         z = z_pair(y)
         if z is None:
-            return {'gain_kind': 'gm*Z21', 'core_gates': 'on port 2', 'gain_reason': 'gm-cancelled 4-port is singular.'}
+            return {'gain_kind': kind, 'core_gates': gates, 'gain_reason': 'gm-cancelled 4-port is singular.'}
         pairs.append(z)
     z11 = _interp(pairs[0][0], pairs[1][0], t)
     z21 = _interp(pairs[0][1], pairs[1][1], t)
-    return {'gain': gm_ref * z21.real, 'gain_kind': 'gm*Z21', 'core_gates': 'on port 2',
+    gain = remote * z21.real + local * z11.real   # each path through the same gm-cancelled tank
+    return {'gain': gain, 'gain_kind': kind, 'core_gates': gates,
             'Z11_off_ohm': [z11.real, z11.imag], 'Z21_off_ohm': [z21.real, z21.imag],
             'gate_ratio': z21.real / z11.real if z11.real else None}
 
