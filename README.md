@@ -6,10 +6,21 @@ A desktop workbench for LC-tank startup analysis: place an N-port inductor, a sw
 
 ![Tank Scan Lab results](docs/screenshots/08-tank-scan.png)
 
-| | |
-|---|---|
-| ![Plot manager, 8-bit tank](docs/screenshots/11-tank-plot-manager.png) | ![Loss share by module](docs/screenshots/12-tank-loss-share.png) |
-| ![8-bit INL / DNL](docs/screenshots/14-inl-dnl-8bit.png) | ![Light theme](docs/screenshots/15-tank-light.png) |
+## Why Tank Scan Lab
+
+Tuning an LC VCO with a switched capacitor array usually means, for every code: build a testbench with port fixtures, cancel the core's transconductance device by device, run AC, and post-process by hand. Rp and the startup gain come out approximate, and the port data cannot tell which block absorbs the loss. Tank Scan Lab does this from one native run, for every code.
+
+![Why the gm core must be in the measurement](docs/images/why-core.svg)
+
+**Frequency and Rp need the whole core, gds included.** At its DC bias a cross-coupled pair is not just "−gm": it adds capacitance (Cgs, Cdb, Miller Cgd) and conductance (gds, gate loss, the RF roll-off of gm) to the tank. In the validation circuit a passive simulation of inductor + array puts f0 at 5.45 GHz, while the complete circuit starts at 4.03 GHz. The core conductance also nearly halves Rp (226 → 122 Ω), so gm·Rp and the margin taken from the passive tank would be 1.85× too optimistic. Tank Scan Lab measures the complete circuit at its operating point and reads gm and gds at the core terminals; the terminal gm already includes series-resistance degeneration (about 8 % below the device-intrinsic gm in the validation run).
+
+**Loss per module tells you what to fix.** A low Rp only says that something is lossy. Every module terminal is probed and the power each block absorbs at f0 is computed (the module admittances add up to the port admittance within about 1e-13). In the validation circuit the core takes 46 % of G_loss, each inductor half 26 % and the array 1.8 %: a better array switch would barely help, while less core loading or a higher-Q inductor would. Shares change with the code (switch Ron at high-capacitance codes, off-state loading), so they are listed per code and can be plotted against the code.
+
+**Transformer-coupled cores need gm·Z21.** When the gates sit on a transformer secondary, the gate swing is not the drain swing. The loop gain is gm times the drain-to-gate transimpedance Z21 of the gm-cancelled tank, not gm·Rp. Give the gate nets the pin roles P2 / N2: the tool reports gm·Z21 and the gate-to-drain ratio, and the losses on the secondary side stay in G_loss.
+
+**Capacitor arrays need more than one capacitance.** Any block with a switched capacitor array (DCO/VCO banks, tunable filters, matching networks, phase shifters) needs per code: the differential C that sets the tuning, the single-ended P / N to ground parts that set common-mode behaviour and asymmetry, Q that shows switch Ron, the C step and DNL that show step uniformity, missing or non-monotonic steps, and the INL that a calibration table must correct. All of it comes from the saved SP spectrum; new observation frequencies need no rerun.
+
+**Accuracy and time.** Against an independent active simulation (each core device's terminal gm cancelled with an AC-only VCCS, floating 1 A drive) the results agree within 0.03 %: Rp 122.11 vs 122.13 Ω, margin 6.470 vs 6.471, gm·Z21 of a transformer-coupled core 18.407 vs 18.407. The analysis is small-signal at the DC operating point: it gives the startup frequency and margin, not the steady-state frequency or swing (use HB or transient for those). For large arrays the linear analyses are much cheaper than HB. As an estimate for 256 codes of a complex circuit where one HB run takes 30 s: about 2 h 8 min for HB versus about 15 min for Tank Scan Lab, testbench setup excluded, scaled from the analysis-time ratio of 1 : 8.7 measured on the validation circuit.
 
 ## What it does
 
@@ -32,6 +43,35 @@ A desktop workbench for LC-tank startup analysis: place an N-port inductor, a sw
 See [docs/TANK_SCAN.md](docs/TANK_SCAN.md) for definitions and validation.
 
 **Also included:** Touchstone (N-port) import and RF component placement in your own Cadence installation, and Z11 Studio for standalone RLC drawing, nodal analysis, linked sweeps and optimization.
+
+## Gallery
+
+| | |
+|---|---|
+| ![Measurement canvas: inductor, register-driven array and gm core](docs/screenshots/09-tank-canvas.png) | ![Canvas contains and per-instance roles](docs/screenshots/10-tank-roles.png) |
+| Canvas: N-port or inductors, a register-driven array and the gm core, connected by named nets. | Tick what the canvas contains (passive or active backend) and check each instance role. |
+| ![256-code \|Z11\| overlay](docs/screenshots/16-tank-8bit.png) | ![Plot manager: values per code](docs/screenshots/11-tank-plot-manager.png) |
+| 8-bit thermometer array in a tank: \|Z11\| of all 256 codes, one color per code, f0 marked. | Plot tabs: f0, margin, loop gain or any other quantity against the code. |
+| ![Loss share by module](docs/screenshots/12-tank-loss-share.png) | ![8-bit array C and Q](docs/screenshots/13-cq-8bit.png) |
+| Share of G_loss per module against the code, with the results and loss tables. | Capacitance mode: C and Q per code at several observation frequencies. |
+| ![8-bit INL / DNL](docs/screenshots/14-inl-dnl-8bit.png) | ![Light theme](docs/screenshots/15-tank-light.png) |
+| Show → INL / DNL: endpoint-fit linearity in LSB, worst values in the bar. | The Light theme: window, canvas and plots switch together. |
+
+## Z11 Studio
+
+Z11 Studio is a standalone RLC network workbench bundled with Tank Scan Lab, for the step before or beside a full simulation: sketch an LC network, look at its Z11, sweep and optimize component values, then turn the result into a schematic.
+
+| | |
+|---|---|
+| ![Z11 Studio sweep](docs/screenshots/17-z11-sweep.png) | ![Z11 Studio Pareto front](docs/screenshots/18-z11-pareto.png) |
+| Two coupled LC resonators (k = 0.45, dot polarity) with C2 swept over six values: one Z11 curve per value. | Two targets (peak \|Z\| and 3 dB bandwidth) with the peak kept in 4–6 GHz: NSGA-II gives 23 Pareto points; click one to see its curves. |
+
+- Draw R, L (with Q), C and mutual coupling k with dot polarity on a multi-page canvas; save and load circuit structures from a library.
+- Z11 magnitude, real, imaginary and phase versus frequency from a built-in nodal solver (no simulator needed).
+- Parameter sweeps: independent sweeps multiply the number of curves; parameters in a linked group step together.
+- Optimization: targets on a peak, the 3 dB bandwidth or a custom quantity (maximize, minimize, hit a value or stay in a range) with constraints; CMA-ES or differential evolution for one target, NSGA-II with a Pareto front for several; apply the best values back to the circuit.
+- Export curves to CSV and figures. With a configured Cadence workspace, create the network's schematic through the Maestro plug-in.
+- Open it from the **Z11 Studio** button in Tank Scan Lab or on its own with `caplab/z11/z11_launch`. It needs NumPy and Matplotlib (see Requirements); its interface is in Chinese.
 
 ## Requirements
 

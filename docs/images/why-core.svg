@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 440" width="960" height="440" font-family="Helvetica, Arial, sans-serif">
+  <rect width="960" height="440" rx="14" fill="#0b0f12"/>
+  <text x="32" y="44" fill="#d5ddd7" font-size="22" font-weight="700">Why the gm core must be in the measurement</text>
+  <text x="32" y="70" fill="#7f8a83" font-size="14">Validation circuit, code 0: two inductor halves (Q 15), switched capacitor array, cross-coupled pair at its DC bias</text>
+
+  <!-- LC only -->
+  <rect x="32" y="96" width="270" height="170" rx="10" fill="#121816" stroke="#2c3532"/>
+  <text x="52" y="126" fill="#7f8a83" font-size="13" font-weight="700">LC ONLY (inductor + array)</text>
+  <text x="52" y="166" fill="#d5ddd7" font-size="15">f0</text>
+  <text x="282" y="166" fill="#d5ddd7" font-size="24" font-weight="700" text-anchor="end">5.45 GHz</text>
+  <text x="52" y="206" fill="#d5ddd7" font-size="15">Rp</text>
+  <text x="282" y="206" fill="#d5ddd7" font-size="24" font-weight="700" text-anchor="end">226 Ω</text>
+  <text x="52" y="244" fill="#7f8a83" font-size="13">what a passive tank simulation shows</text>
+
+  <!-- arrow -->
+  <line x1="312" y1="181" x2="400" y2="181" stroke="#33D1DE" stroke-width="3"/>
+  <polygon points="400,173 416,181 400,189" fill="#33D1DE"/>
+  <text x="364" y="120" fill="#33D1DE" font-size="13" text-anchor="middle" font-weight="700">+ gm core</text>
+  <text x="364" y="138" fill="#33D1DE" font-size="13" text-anchor="middle">at its bias</text>
+  <text x="364" y="216" fill="#7f8a83" font-size="12" text-anchor="middle">C: Cgs, Cdb,</text>
+  <text x="364" y="232" fill="#7f8a83" font-size="12" text-anchor="middle">Miller Cgd</text>
+  <text x="364" y="252" fill="#7f8a83" font-size="12" text-anchor="middle">G: gds, gate loss,</text>
+  <text x="364" y="268" fill="#7f8a83" font-size="12" text-anchor="middle">gm roll-off</text>
+
+  <!-- complete -->
+  <rect x="426" y="96" width="300" height="170" rx="10" fill="#121816" stroke="#33D1DE"/>
+  <text x="446" y="126" fill="#33D1DE" font-size="13" font-weight="700">COMPLETE CIRCUIT (what oscillates)</text>
+  <text x="446" y="166" fill="#d5ddd7" font-size="15">f0</text>
+  <text x="706" y="166" fill="#d5ddd7" font-size="24" font-weight="700" text-anchor="end">4.03 GHz</text>
+  <text x="446" y="206" fill="#d5ddd7" font-size="15">Rp(LC+loading)</text>
+  <text x="706" y="206" fill="#d5ddd7" font-size="24" font-weight="700" text-anchor="end">122 Ω</text>
+  <text x="446" y="244" fill="#7f8a83" font-size="13">margin = G_neg / G_loss = 6.47</text>
+
+  <!-- deltas -->
+  <rect x="746" y="96" width="182" height="170" rx="10" fill="#121816" stroke="#2c3532"/>
+  <text x="764" y="126" fill="#7f8a83" font-size="13" font-weight="700">CORE LEFT OUT</text>
+  <text x="764" y="166" fill="#EC5AA5" font-size="22" font-weight="700">f0 +35 %</text>
+  <text x="764" y="206" fill="#EC5AA5" font-size="22" font-weight="700">Rp ×1.85</text>
+  <text x="764" y="244" fill="#7f8a83" font-size="11">gm·Rp and margin are</text>
+  <text x="764" y="260" fill="#7f8a83" font-size="11">overstated by the same factor</text>
+
+  <!-- loss bar -->
+  <text x="32" y="312" fill="#d5ddd7" font-size="15" font-weight="700">Where G_loss goes at f0 (per-module split, code 0)</text>
+  <rect x="32" y="328" width="410.9" height="40" fill="#33D1DE"/>
+  <rect x="442.9" y="328" width="233.6" height="40" fill="#F2C230"/>
+  <rect x="676.5" y="328" width="233.6" height="40" fill="#e0b02a"/>
+  <rect x="910.1" y="328" width="17.9" height="40" fill="#EC5AA5"/>
+  <text x="44" y="354" fill="#0b0f12" font-size="14" font-weight="700">gm core 45.9 % (gds, gate loss, gm roll-off)</text>
+  <text x="454" y="354" fill="#0b0f12" font-size="15" font-weight="700">inductor half 26.1 %</text>
+  <text x="688" y="354" fill="#0b0f12" font-size="15" font-weight="700">inductor half 26.1 %</text>
+  <text x="928" y="392" fill="#EC5AA5" font-size="13" text-anchor="end">cap array 1.8 %</text>
+  <text x="32" y="420" fill="#7f8a83" font-size="12">Numbers from one native run of the validation circuit (docs/VALIDATION.md); they agree with an independent gm-cancellation simulation within 0.03 %.</text>
+</svg>

@@ -53,6 +53,8 @@ Native cross-checks during development used the developer's own device models (n
 
 The same canvas with the gates tied inside the core cell and port 2 on the secondary reproduced the one-port result (Rp 122.12 Ω, margin 6.47, gm·Z11). Terminal gm/gds read by the tool were 0.923× the transistor's intrinsic operating-point values, the expected series-resistance degeneration of the RF device model; the terminal value is the one that loads the tank.
 
+The same refined run, code 0, also shows how much the core changes the tank (used in the README figure `docs/images/why-core.svg`): f0 4.030 GHz for the complete circuit versus 5.449 GHz for inductor + array only (f0 LC only); Rp(LC) 225.85 Ω versus Rp(LC+loading) 122.12 Ω; share of G_loss at f0: gm core 45.9 %, each inductor half 26.1 %, capacitor array 1.8 %. Code 15: f0 4.405 versus 6.479 GHz, Rp 268.19 versus 129.97 Ω, core 51.5 %.
+
 Screenshots:
 
 - `screenshots/01-empty.png`: empty workbench and Load example.
@@ -71,6 +73,8 @@ Screenshots:
 - `screenshots/14-inl-dnl-8bit.png`: 8-bit thermometer array, DNL and INL (endpoint fit).
 - `screenshots/15-tank-light.png`: Light theme.
 - `screenshots/16-tank-8bit.png`: |Z11| of all 256 codes of the 8-bit tank.
+- `screenshots/17-z11-sweep.png`: Z11 Studio, two coupled LC resonators with one capacitor swept (synthetic).
+- `screenshots/18-z11-pareto.png`: Z11 Studio, two-target optimization with the NSGA-II Pareto front (synthetic).
 
 Screenshots 08–16 were taken from this repository's application on a TigerVNC Xvnc display with the synthetic examples only.
 
