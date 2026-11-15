@@ -19,8 +19,11 @@ APPROXIMATE_RECIPROCITY_REL_TOL = 1e-4
 APPROXIMATE_RECONSTRUCTION_REL_TOL = 1e-6
 RAW_Y_KEYS = frozenset('Y{}_{}_S'.format(pair, part)
                        for pair in ('11', '12', '21', '22') for part in ('G', 'B'))
+# Full 4-port ground-referenced Y of the DUT when an optional port 2 (P2/N2) is used.
+PORT2_Y_KEYS = frozenset('X{}{}_{}_S'.format(i, j, part)
+                         for i in range(1, 5) for j in range(1, 5) for part in ('G', 'B'))
 MEASUREMENT_KEYS = frozenset(('point', 'code', 'frequency_Hz', 'C_F', 'Q',
-                              'G_S', 'B_S', 'status', 'Q_signed', 'decomposition')) | RAW_Y_KEYS
+                              'G_S', 'B_S', 'status', 'Q_signed', 'decomposition')) | RAW_Y_KEYS | PORT2_Y_KEYS
 
 
 def result_names(row):

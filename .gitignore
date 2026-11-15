@@ -9,3 +9,4 @@ runs/
 .venv/
 caplab/z11/saved_state/
 caplab/z11/saved_structures/
+examples/thermo8_tank.json

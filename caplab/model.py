@@ -160,7 +160,7 @@ def validate(project):
             voltage = number(role[3:])
             net = 'CAL_DC{}'.format(len(fixed))
             fixed[net] = voltage
-        elif role in ('P', 'N', 'VDD', 'VSS'):
+        elif role in ('P', 'N', 'P2', 'N2', 'VDD', 'VSS'):
             net = 'CAL_' + role
         elif not role:
             net = 'CAL_W{}'.format(idx)
@@ -171,11 +171,13 @@ def validate(project):
             netmap[k] = net
     if not {'P', 'N'}.issubset(seen):
         raise ValueError('Assign both differential measurement terminals P and N')
+    if len({'P2', 'N2'} & seen) == 1:
+        raise ValueError('Optional port 2 needs both P2 and N2')
     assigned = {int(r[4:]) for r in seen if r.startswith('BIT:')}
     if assigned != set(range(bits)):
         raise ValueError('Assign BIT:0 through BIT:{}; bit 0 is the LSB'.format(bits - 1))
     return simulation_config({'frequencies': fs, 'codes': cs, 'bits': bits, 'vdd': vdd, 'vcm': vcm,
-            'temperature': temp, 'nets': netmap, 'fixed': fixed}, s)
+            'temperature': temp, 'nets': netmap, 'fixed': fixed, 'port2': {'P2', 'N2'} <= seen}, s)
 
 
 def simulation_config(cfg, settings):

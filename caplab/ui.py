@@ -31,9 +31,15 @@ from .maestro_panel import attach_context, source_description, source_design, ru
 from .config_state import capture_saved_config, record_config_baseline
 from .rf_ui import RFControls
 from .pointlogs import PointLogBrowser, open_row_log
-from .resonance_view import ResonanceView, resonance_data
 from .tank_view import TankView
-from .tank_scan import tank_data, tank_settings, backend_mode
+from .tank_scan import tank_data, tank_settings, backend_mode, needs_module_currents
+
+TANK_VIEW='Resonance / tank'
+
+
+def canonical_view(view):
+    """Resonance and Tank scan were merged into one measurement mode."""
+    return TANK_VIEW if view in ('Resonance','Tank scan',TANK_VIEW) else 'Capacitance'
 
 BG=fw.BG;PANEL=fw.PANEL;INK=fw.TEXT;MUTED=fw.DIM;ACCENT=fw.accent('cap')
 
@@ -59,7 +65,11 @@ class App(tk.Tk):
         self.selected=None;self.zoom=1.;self.pan=[0.,0.];self.drag=None;self.undo_stack=[];self.switching_page=False
         self.events=queue.Queue();self.jobs={};self.sim_jobs={};self.sim_gate=threading.Semaphore(1);self.file_gate=threading.Lock();self.backend=None
         self.viewer=ConfigViewer();self.resonance_cache={};self.resonance_revision=0;self.closing=False;self.redraw_id=None;self._field_loading=False
-        self.book.setdefault('appearance',{'canvas':'black','plot':'black'})
+        self.book.setdefault('appearance',{'canvas':'black','plot':'neon' if self.tank_app else 'black'})
+        if self.tank_app:
+            # Tank Scan Lab: one Dark / Light theme drives the UI, the circuit canvas and every plot.
+            ui=self.book['appearance'].get('ui','dark');self.book['appearance']['ui']=ui if ui in ('dark','light') else 'dark'
+            self.book['appearance']['plot']='neon';self.book['appearance']['canvas']='black'
         self.canvas_tools=CanvasTools(self)
         self._style();self._screen_surface();self._layout();self.refresh_registers();self.restore_results()
         if not self.rows:self.update_measurement_view()
@@ -68,7 +78,9 @@ class App(tk.Tk):
         self.bind('<Control-e>',lambda e:self.open_native_config());self.bind('<Control-b>',lambda e:self.binding_dialog())
         self.protocol('WM_DELETE_WINDOW',self.close)
         self.after(40,self.poll);self.after(150,self.redraw);self.after(200,self.load_libraries)
-        if self.tank_app:self.after_idle(self.layout_side_panels)
+        if self.tank_app:
+            self.after_idle(self.layout_side_panels)
+            if self.book['appearance'].get('ui')=='light':self.set_ui_theme('light')
 
     @property
     def busy(self):return bool(self.jobs)
@@ -80,8 +92,9 @@ class App(tk.Tk):
         style=ttk.Style(self)
         style.configure('Muted.TLabel',foreground=fw.DIM)
         if self.tank_app:
-            from .tank_view import ensure_styles
-            ensure_styles(self);CQPlot.FONT=self.font_family
+            from .tank_view import ensure_styles, palette
+            self.ui_palette_name='dark';self.palette=palette('dark')
+            ensure_styles(self,self.palette);CQPlot.FONT=self.font_family
 
     def _screen_surface(self):
         self.surface=self
@@ -105,6 +118,10 @@ class App(tk.Tk):
             if self.tank_app:
                 self.side_toggle=ttk.Button(box,text='Show setup panels',style='Ghost.TButton',command=self.toggle_side_panels)
                 self.side_toggle.pack(side='left',padx=4)
+                tk.Label(box,text='Theme',bg=fw.PANEL,fg=fw.DIM).pack(side='left',padx=(10,4))
+                self.ui_theme=tk.StringVar(value='Dark')
+                cb=ttk.Combobox(box,textvariable=self.ui_theme,values=['Dark','Light'],state='readonly',width=6)
+                cb.pack(side='left',padx=(0,10));cb.bind('<<ComboboxSelected>>',lambda e:self.set_ui_theme(self.ui_theme.get().lower()))
             for label,fn in [('New workbook',self.new),('Open workbook',self.open),('Save workbook',self.save)]:
                 ttk.Button(box,text=label,command=fn).pack(side='left',padx=4)
         if self.tank_app:fw.header(self.surface,'Tank Scan Lab','N-port + cap array + gm: f0, Rp, gm, startup gain',product='cap',right=global_actions).pack(fill='x')
@@ -204,7 +221,7 @@ class App(tk.Tk):
         self.pins=ttk.Treeview(right,columns=('role',),show='tree headings',height=5,selectmode='browse')
         self.pins.heading('#0',text='Physical pin');self.pins.heading('role',text='Role / net name');self.pins.column('#0',width=112);self.pins.column('role',width=146)
         self.pins.pack(fill='x');self.pins.bind('<<TreeviewSelect>>',self.pin_selected)
-        self.rolevar=tk.StringVar();self.rolebox=ttk.Combobox(right,textvariable=self.rolevar,values=['','P','N','VDD','VSS','DC:0','CTRL<3:0>'])
+        self.rolevar=tk.StringVar();self.rolebox=ttk.Combobox(right,textvariable=self.rolevar,values=['','P','N','P2','N2','VDD','VSS','DC:0','CTRL<3:0>'])
         self.rolebox.pack(fill='x',pady=5);self.rolebox.bind('<Return>',lambda e:self.set_role())
         ttk.Button(right,text='Apply pin name',command=self.set_role).pack(fill='x')
         self.runbutton=ttk.Button(actions,text='Run SP / Measure C + Q',style='Primary.TButton',command=self.run);self.runbutton.pack(fill='x',pady=(3,4))
@@ -234,8 +251,8 @@ class App(tk.Tk):
     def _result_layout(self):
         modebar=ttk.Frame(self.resultpage,padding=6);modebar.pack(fill='x')
         ttk.Label(modebar,text='Measurement mode').pack(side='left')
-        self.measurement_view=tk.StringVar(value=self.page().get('measurement_view',self.default_view()))
-        self.measurement_combo=ttk.Combobox(modebar,textvariable=self.measurement_view,values=['Capacitance','Resonance','Tank scan'],state='readonly',width=16)
+        self.measurement_view=tk.StringVar(value=canonical_view(self.page().get('measurement_view',self.default_view())))
+        self.measurement_combo=ttk.Combobox(modebar,textvariable=self.measurement_view,values=['Capacitance',TANK_VIEW],state='readonly',width=16)
         self.measurement_combo.pack(side='left',padx=7);self.measurement_combo.bind('<<ComboboxSelected>>',lambda e:self.update_measurement_view())
         self.cap_resultframe=ttk.Frame(self.resultpage);self.cap_resultframe.pack(fill='both',expand=True)
         top=ttk.Frame(self.cap_resultframe,padding=8);top.pack(fill='x')
@@ -248,8 +265,10 @@ class App(tk.Tk):
         self.axiscombo=ttk.Combobox(bar,textvariable=self.axisvar,state='readonly',width=15);self.axiscombo.pack(side='left',padx=7);self.axiscombo.bind('<<ComboboxSelected>>',lambda e:self.draw_plots())
         ttk.Button(bar,text='Slice...',command=self.filter_plot).pack(side='left')
         self.plot_theme=tk.StringVar(value=self.book['appearance'].get('plot','black').title())
-        cb=ttk.Combobox(modebar,textvariable=self.plot_theme,values=['Black','White'],state='readonly',width=7);cb.pack(side='right');cb.bind('<<ComboboxSelected>>',lambda e:self.set_plot_theme())
-        ttk.Label(modebar,text='Plot ').pack(side='right');self.plot_filters={}
+        if not self.tank_app:
+            cb=ttk.Combobox(modebar,textvariable=self.plot_theme,values=['Black','White'],state='readonly',width=7);cb.pack(side='right');cb.bind('<<ComboboxSelected>>',lambda e:self.set_plot_theme())
+            ttk.Label(modebar,text='Plot ').pack(side='right')
+        self.plot_filters={}
         self.summary=DecompositionSummary(self.cap_resultframe);self.summary.pack(fill='x',padx=7,pady=(3,1))
         componentbar=ttk.Frame(self.cap_resultframe,padding=(8,1));componentbar.pack(fill='x')
         ttk.Label(componentbar,text='Plot component').pack(side='left')
@@ -257,28 +276,34 @@ class App(tk.Tk):
         self.componentcombo=ttk.Combobox(componentbar,textvariable=self.componentvar,state='readonly',width=28,
             values=['Total P-N','Coupling P-N','Ground-path equivalent','P-to-ground shunt','N-to-ground shunt'])
         self.componentcombo.pack(side='left',padx=7);self.componentcombo.bind('<<ComboboxSelected>>',lambda e:self.draw_plots())
+        ttk.Label(componentbar,text='Show').pack(side='left',padx=(14,0))
+        self.cq_view=tk.StringVar(value='C / Q')
+        cb=ttk.Combobox(componentbar,textvariable=self.cq_view,state='readonly',width=12,values=['C / Q','C step','INL / DNL'])
+        cb.pack(side='left',padx=7);cb.bind('<<ComboboxSelected>>',lambda e:self.draw_plots())
+        self.linearity_note=tk.StringVar();ttk.Label(componentbar,textvariable=self.linearity_note,style='Muted.TLabel').pack(side='left',padx=8)
         self.plots=CQPlot(self.cap_resultframe,height=240);self.plots.set_theme(self.plot_theme.get().lower());self.plots.pack(fill='both',expand=True,padx=7,pady=5)
         ttk.Label(self.cap_resultframe,text='Click a curve or legend to highlight it; hover a highlighted data point to read its value.',style='Muted.TLabel',padding=(8,2)).pack(fill='x')
         self.table_panel=ResultsTable(self.cap_resultframe,on_select=lambda row:self.summary.set_row(row,self.result_names()),on_log=lambda row:open_row_log(self,row));self.table_panel.pack(fill='x',padx=7,pady=(1,5));self.table=self.table_panel.tree
 
-        self.resonance_view=ResonanceView(self.resultpage,self)
         self.tank_view=TankView(self.resultpage,self)
 
-    def default_view(self):return 'Tank scan' if self.tank_app else 'Capacitance'
+    def default_view(self):return TANK_VIEW if self.tank_app else 'Capacitance'
 
     def update_measurement_view(self):
-        mode=self.measurement_view.get();page=self.page();page['measurement_view']=mode
-        self.runbutton.configure(text={'Resonance':'Run / Measure resonance + loss','Tank scan':'Run tank scan'}.get(mode,'Run SP / Measure C + Q'))
+        mode=canonical_view(self.measurement_view.get())
+        if mode!=self.measurement_view.get():self.measurement_view.set(mode)
+        page=self.page();page['measurement_view']=mode
+        self.runbutton.configure(text='Run resonance / tank scan' if mode==TANK_VIEW else 'Run SP / Measure C + Q')
         self.resonance_revision+=1;revision=self.resonance_revision;pid=page['id']
         if mode=='Capacitance':
-            self.resonance_view.pack_forget();self.tank_view.pack_forget();self.cap_resultframe.pack(fill='both',expand=True);return
+            self.tank_view.pack_forget();self.cap_resultframe.pack(fill='both',expand=True);return
         self.cap_resultframe.pack_forget()
         project=page.get('run_project') or page['project'];private=project.get('private') or {}
-        if mode=='Tank scan':
-            self.resonance_view.pack_forget();self.tank_view.pack(fill='both',expand=True)
+        if mode==TANK_VIEW:
+            self.tank_view.pack(fill='both',expand=True)
             settings=tank_settings(page,project)
             def tank_done(data):
-                if self.book['active_page']==pid and self.resonance_revision==revision and self.measurement_view.get()=='Tank scan':
+                if self.book['active_page']==pid and self.resonance_revision==revision and self.measurement_view.get()==TANK_VIEW:
                     self.tank_view.set_data(data,project['settings'].get('sweep_mode','cartesian'),self.plot_theme.get().lower())
             def tank_failed(message):
                 if self.book['active_page']==pid and self.resonance_revision==revision:
@@ -286,19 +311,6 @@ class App(tk.Tk):
             if not (private.get('spectrum') or {}).get('rows'):tank_done(tank_data(project,settings));return
             self.tank_view.set_data({'rows':[],'names':[],'mode':backend_mode(settings),'issues':[],'message':'Analyzing saved sweep and native module currents...'},theme=self.plot_theme.get().lower())
             self.task(lambda b:tank_data(project,settings),tank_done,pid,label='Tank scan analysis',failed=tank_failed);return
-        self.tank_view.pack_forget();self.resonance_view.pack(fill='both',expand=True)
-        key=(private.get('folder'),private.get('history'),private.get('spectrum_sha256'))
-        if not all(key):key=None
-        def done(data):
-            if key is not None:
-                self.resonance_cache[key]=data
-                if len(self.resonance_cache)>12:self.resonance_cache.pop(next(iter(self.resonance_cache)))
-            if self.book['active_page']==pid and self.resonance_revision==revision and self.measurement_view.get()=='Resonance':
-                self.resonance_view.set_data(data,project['settings'].get('sweep_mode','cartesian'),self.plot_theme.get().lower())
-        if key is not None and key in self.resonance_cache:done(self.resonance_cache[key]);return
-        if not (private.get('spectrum') or {}).get('rows'):done(resonance_data(project));return
-        self.resonance_view.set_data({'rows':[],'names':[],'losses':{},'message':'Reading saved sweep and native loss data...'},theme=self.plot_theme.get().lower())
-        self.task(lambda b:resonance_data(project),done,pid,label='Read resonance and module losses')
 
     def layout_side_panels(self):
         """Tank app: results tab uses the full width unless the user pinned the panels open."""
@@ -478,7 +490,7 @@ class App(tk.Tk):
         self.modevar.set('Synchronous' if self.project['settings'].get('sweep_mode')=='synchronous' else 'Cartesian')
         self.decomp_enabled.set(bool(self.project['settings'].get('decomposition',True)));self.componentvar.set(p.get('component','Total P-N'))
         self.libvar.set(self.project['library']);state=p.get('editor',{});self.selected=state.get('selected');self.zoom=state.get('zoom',1.);self.pan=state.get('pan',[0.,0.])[:];self.undo_stack=[]
-        self.measurement_view.set(p.get('measurement_view',self.default_view()))
+        self.measurement_view.set(canonical_view(p.get('measurement_view',self.default_view())))
         self._field_loading=False;self.fill_pins();self.table_panel.set_rows([]);self.restore_results();self.draw_plots();self.redraw();self.refresh_progress();self.refresh_log();self.load_libraries()
         self.tabs.select(self.resultpage if state.get('tab')=='results' else self.editor)
         self.refresh_source_label();self.update_measurement_view()
@@ -683,12 +695,26 @@ class App(tk.Tk):
     def set_canvas_theme(self):
         self.book['appearance']['canvas']=self.canvas_theme.get().lower();self.canvas.configure(bg='#ffffff' if self.canvas_theme.get()=='White' else fw.PLOT_BG);self.redraw()
 
+    def set_ui_theme(self,name):
+        """Tank Scan Lab: switch the whole window, the circuit canvas and all plots between dark and light."""
+        from . import product_theme as pt
+        from .tank_view import ensure_styles
+        name=name if name in pt.PALETTES else 'dark'
+        new=pt.PALETTES[name];old=pt.PALETTES.get(getattr(self,'ui_palette_name','dark'),pt.DARK)
+        self.ui_theme.set(name.title());self.book['appearance']['ui']=name
+        if new is not old:
+            self.ui_palette_name=name;self.palette=pt.palette(name)
+            globals().update(BG=new['BG'],PANEL=new['PANEL'],INK=new['INK'],MUTED=new['MUTED'],ACCENT=new['ACCENT_TEXT'])
+            pt.apply_ui_palette(self,name);ensure_styles(self,self.palette)
+            pt.recolor(self,pt.color_map(old,new))
+            if hasattr(self,'tank_view'):self.tank_view.colors=dict(self.palette)
+        self.canvas_theme.set('White' if name=='light' else 'Black');self.set_canvas_theme()
+        self.plot_theme.set(pt.PLOT_THEME[name].title());self.set_plot_theme()
+        if hasattr(self,'tank_view'):self.tank_view.update_idletasks();self.tank_view.refresh_tiles()
+
     def set_plot_theme(self):
         self.book['appearance']['plot']=self.plot_theme.get().lower();self.plots.set_theme(self.plot_theme.get().lower())
-        if hasattr(self,'resonance_view'):
-            self.resonance_view.plot.set_theme(self.plot_theme.get().lower())
-            self.resonance_view.wave_plot.set_theme(self.plot_theme.get().lower())
-        if hasattr(self,'tank_view'):self.tank_view.plot.set_theme(self.plot_theme.get().lower())
+        if hasattr(self,'tank_view'):self.tank_view.set_theme(self.plot_theme.get().lower())
 
     def transform(self,node,x,y):
         x,y=node_rotation_transform(node,x,y)
@@ -809,10 +835,10 @@ class App(tk.Tk):
         if self.project.get('demo_model'):
             self.capture_fields(strict=False);self.replay_example();return
         if pid in self.sim_jobs:self.status.set('This page is already running. Other pages remain available.');return
-        view=self.measurement_view.get()
-        if view in ('Resonance','Tank scan'):
-            self.project['settings']['capture_loss']=True;self.decomp_enabled.set(True)
-        if view=='Tank scan':
+        view=canonical_view(self.measurement_view.get())
+        if view==TANK_VIEW:
+            self.decomp_enabled.set(True)
+            self.project['settings']['capture_loss']=needs_module_currents(tank_settings(self.page(pid),self.project))
             try:
                 from .spectrum import simulation_grid
                 from .model import number
@@ -963,6 +989,17 @@ class App(tk.Tk):
             short={'coupling':'Coupling','ground':'Ground path','p_ground':'P-ground','n_ground':'N-ground'}[key]
             approximate=any(bool((row.get('decomposition') or {}).get('approximate')) for row in self.rows)
             titles=(short+' C (fF)'+(' - approx.' if approximate else ''),short+' Q'+(' - approx.' if approximate else ''))
+        view=self.cq_view.get() if hasattr(self,'cq_view') else 'C / Q';self.linearity_note.set('') if hasattr(self,'linearity_note') else None
+        if view!='C / Q' and rows:
+            from .linearity import linearity_rows,summary
+            short=(titles[0].split(' C (fF)')[0]+' ') if titles else ''
+            rows=linearity_rows(rows,axis if axis in rows[0] else ('point' if 'point' in rows[0] else 'code'),self.result_names(),self.result_mode,self.plot_filters,include_frequency=True)
+            if view=='C step':metrics=[('C_step_F',short+'C step per code (fF)',1e15,'fF')]
+            else:
+                metrics=[('DNL_LSB',short+'DNL (LSB)',1,'LSB'),('INL_LSB',short+'INL (LSB, endpoint fit)',1,'LSB')]
+                worst=summary(rows)
+                if worst['max_abs_DNL_LSB'] is not None:self.linearity_note.set('max |DNL| {:.3g} LSB   max |INL| {:.3g} LSB'.format(worst['max_abs_DNL_LSB'],worst['max_abs_INL_LSB']))
+            self.plots.set_data(rows,axis,self.result_names(),self.result_mode,self.plot_filters,metrics=metrics);return
         self.plots.set_data(rows,axis,self.result_names(),self.result_mode,self.plot_filters,titles=titles)
 
     def filter_plot(self):
@@ -1033,9 +1070,13 @@ class App(tk.Tk):
 
     def replace_project(self,p,prepared=False):
         if self.sim_jobs:self.error('Stop active simulations before replacing the workbook. Page editing and saving remain available.');return
-        self.book=p if prepared else workbook(p);self.book.setdefault('appearance',{'canvas':'black','plot':'black'})
-        self.canvas_theme.set(self.book['appearance']['canvas'].title());self.set_canvas_theme()
-        self.plot_theme.set(self.book['appearance']['plot'].title());self.set_plot_theme()
+        self.book=p if prepared else workbook(p);self.book.setdefault('appearance',{'canvas':'black','plot':'neon' if self.tank_app else 'black'})
+        if self.tank_app:
+            # the Dark / Light choice belongs to the window; it also sets the canvas and plot themes
+            self.set_ui_theme(getattr(self,'ui_palette_name','dark'))
+        else:
+            self.canvas_theme.set(self.book['appearance']['canvas'].title());self.set_canvas_theme()
+            self.plot_theme.set(self.book['appearance']['plot'].title());self.set_plot_theme()
         self.refresh_pages();self.activate_page(self.page())
 
     def load_workbook_path(self,path,session=False):
@@ -1052,7 +1093,8 @@ class App(tk.Tk):
         self.task(work,done,label='Load workbook',scope='workbook')
 
     def load_example(self):
-        self.load_workbook_path(ROOT/'examples'/'ideal_array.json',session=True)
+        name='ideal_tank.json' if self.tank_app else 'ideal_array.json'
+        self.load_workbook_path(ROOT/'examples'/name,session=True)
 
     def replay_example(self):
         from .demo import replay

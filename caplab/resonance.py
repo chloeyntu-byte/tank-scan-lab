@@ -24,6 +24,23 @@ def _impedance(freq, values):
 
 
 def find_first_resonance(samples):
+    found = find_resonances(samples, first_only=True)
+    return found[0] if found else {'available': False, 'reason': 'No resolved impedance zero crossing in the simulated range.'}
+
+
+def find_resonances(samples, first_only=False):
+    """Every bracketed Im(Zdiff)=0 crossing in increasing frequency (see find_first_resonance)."""
+    out = []
+    try:
+        result = _scan(samples, out, first_only)
+    except ValueError:
+        raise
+    if result is not None:
+        return [result]
+    return out
+
+
+def _scan(samples, out, first_only):
     """Return first bracketed Im(Zdiff)=0 crossing, or an unavailable result.
 
     samples belong to ONE register point and contain all eight Y matrix fields.
@@ -80,9 +97,11 @@ def find_first_resonance(samples):
         scale = max(abs(za), abs(zb), abs(z), 1e-300)
         if abs(z.imag) > 1e-8 * scale:
             continue
-        return {'available': True, 'frequency_Hz': xs[i] + t * (xs[i+1] - xs[i]),
-                'Z_real_ohm': z.real, 'Z_imag_ohm': z.imag,
-                'kind': 'series-like' if zb.imag > za.imag else 'parallel-like',
-                'bracket_Hz': [xs[i], xs[i+1]], 'estimated': True,
-                'method': 'linear interpolation of complex Y matrix'}
-    return {'available': False, 'reason': 'No resolved impedance zero crossing in the simulated range.'}
+        out.append({'available': True, 'frequency_Hz': xs[i] + t * (xs[i+1] - xs[i]),
+                    'Z_real_ohm': z.real, 'Z_imag_ohm': z.imag,
+                    'kind': 'series-like' if zb.imag > za.imag else 'parallel-like',
+                    'bracket_Hz': [xs[i], xs[i+1]], 'estimated': True,
+                    'method': 'linear interpolation of complex Y matrix'})
+        if first_only:
+            return None
+    return None

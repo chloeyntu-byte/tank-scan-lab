@@ -65,6 +65,21 @@ class TankScanAnalytic(unittest.TestCase):
         c_total = C_ARR + CG / 2
         self.assertAlmostEqual(r['C_eff_F'] / c_total, 1, delta=0.03)
 
+    def test_gain_curve_matches_margin_at_f0(self):
+        r = tank_scan.analyze_point(self.spectrum, self.loss, self.plan, ROLES, 'active', sweep_start=self.f0 * 0.9)
+        curve = r['gain_curve']
+        self.assertEqual(len(curve), 401)  # reference sample excluded
+        f = [c[0] for c in curve]
+        i = next(k for k in range(len(f) - 1) if f[k] <= r['f0_Hz'] <= f[k + 1])
+        t = (r['f0_Hz'] - f[i]) / (f[i + 1] - f[i])
+        mag = [abs(complex(c[1], c[2])) for c in curve]
+        self.assertAlmostEqual((mag[i] + t * (mag[i + 1] - mag[i])) / r['margin'], 1, places=5)
+        # Phase of T passes through zero at f0 (falls with frequency for a parallel tank).
+        self.assertGreater(curve[i - 3][2], 0)
+        self.assertLess(curve[i + 4][2], 0)
+        # |T| peaks near, not exactly at, f0 (Re Y_loss varies); startup uses phase-zero.
+        self.assertLess(abs(f[max(range(len(mag)), key=mag.__getitem__)] / r["f0_Hz"] - 1), 0.01)
+
     def test_passive_mode_matches_re_z(self):
         roles = dict(ROLES, GM='load')
         r = tank_scan.analyze_point(self.spectrum, self.loss, self.plan, roles, 'passive')
@@ -105,6 +120,17 @@ class TankScanAnalytic(unittest.TestCase):
         data = tank_scan.tank_data(project, settings)
         self.assertEqual(data['mode'], 'active')
         self.assertTrue(data['rows'][0]['tank']['available'], data['rows'][0]['tank'].get('reason'))
+        z = data['rows'][0]['z11']
+        self.assertEqual(len(z), len(self.spectrum))
+        peak = max(z, key=lambda c: abs(complex(c[1], c[2])))
+        self.assertLess(abs(peak[0] / self.f0 - 1), 0.01)
+        project['settings'] = {'tank_gm_ref': '10M', 'simulation_start': self.f0 * 0.9}
+        self.assertEqual(len(tank_scan.tank_data(project, settings)['rows'][0]['z11']), len(self.spectrum) - 1)
+        self.assertTrue(tank_scan.needs_module_currents(dict(settings, loss_split=False)))
+        passive = {'roles': dict(ROLES), 'contains': {'inductor': True, 'array': True, 'gm': False}, 'loss_split': False}
+        self.assertFalse(tank_scan.needs_module_currents(passive))
+        r = tank_scan.tank_data(dict(project, private={'spectrum': {'rows': self.spectrum}}), passive)['rows'][0]['tank']
+        self.assertTrue(r['available'] and r['partial'], r.get('reason'))
         sweep = tank_scan.suggested_sweep(data['rows'])
         self.assertLess(sweep['simulation_start'], self.f0)
         self.assertGreater(sweep['simulation_stop'], self.f0)
@@ -191,3 +217,34 @@ class ReferenceGrid(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Refinement(unittest.TestCase):
+    def test_grid_keeps_base_and_adds_clusters(self):
+        from caplab.spectrum import simulation_grid
+        base = {'frequencies': '5G', 'simulation_start': '1G', 'simulation_stop': '20G', 'simulation_points': 101,
+                'simulation_sweep': 'log', 'tank_gm_ref': '10M'}
+        g0 = simulation_grid(base)
+        g1 = simulation_grid(dict(base, tank_refine=[3.0e9, 7.5e9, 19.99e9]))
+        self.assertTrue(set(g0) <= set(g1))
+        self.assertEqual(g1[0], 10e6)
+        self.assertEqual(g1, sorted(g1))
+        for f0 in (3.0e9, 7.5e9):
+            near = [f for f in g1 if abs(f / f0 - 1) <= 0.006 + 1e-12]
+            self.assertGreaterEqual(len(near), 13)
+            step = max(b - a for a, b in zip(near, near[1:]))
+            self.assertLessEqual(step / f0, 0.0011)
+        self.assertLessEqual(max(g1), 20e9)
+
+    def test_refined_bracket_is_tight(self):
+        f0 = exact_f0()
+        base = [10e6] + [f0 * (0.7 + 0.6 * k / 30) for k in range(31)]
+        from caplab.spectrum import refinement_points
+        grid = sorted(set(base) | set(refinement_points([f0 * 1.0003], base[1], base[-1])))
+        plan, loss, spectrum = records(grid)
+        r = tank_scan.analyze_point(spectrum, loss, plan, ROLES, 'active', sweep_start=base[1])
+        self.assertTrue(r['available'], r.get('reason'))
+        self.assertLess(r['bracket_rel'], 0.0011)
+        self.assertNotIn('bracket', r.get('warning') or '')
+        self.assertAlmostEqual(r['f0_Hz'] / f0, 1, places=6)
+        self.assertEqual(tank_scan.refine_centers([{'tank': r}]), [round(r['f0_Hz'], 3)])

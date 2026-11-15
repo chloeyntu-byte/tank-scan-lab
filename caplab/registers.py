@@ -7,7 +7,7 @@ from .model import expand_pin, codes, frequencies, number
 from .canvas_tools import node_rotation_transform, wire_points, on_segment
 
 
-RESERVED = {'P', 'N', 'VDD', 'VSS'}
+RESERVED = {'P', 'N', 'P2', 'N2', 'VDD', 'VSS'}
 _NET_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*(?:<\d+(?::\d+)?>)?$')
 
 
@@ -317,11 +317,12 @@ def validate_explicit(project):
         seen.update(labels)
         for key in members:nets[key]=net
     if not {'P','N'}.issubset(seen):raise ValueError('Assign measurement terminals P and N; the differential port is connected across P and N')
+    if len({'P2','N2'}&seen)==1:raise ValueError('Optional port 2 needs both P2 and N2')
     for r in regs:
         if r['id'] not in used_regs:raise ValueError('Register '+r['name']+' is not connected to an array')
     return {'frequencies':fs,'vdd':vdd,'vcm':vcm,'temperature':temp,'nets':nets,'fixed':fixed,
             'registers':regs,'scan_points':points,'codes':list(range(len(points))),
-            'sweep_mode':s.get('sweep_mode','cartesian'),'explicit':True}
+            'sweep_mode':s.get('sweep_mode','cartesian'),'explicit':True,'port2':{'P2','N2'}<=seen}
 
 
 def _legacy_to_explicit(project):

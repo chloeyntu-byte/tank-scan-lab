@@ -38,9 +38,12 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install -r requirements-z11.txt
       - name: Cap Array Lab and Z11 tests
         run: xvfb-run -a python -B -m unittest discover -s tests -p 'test_*.py'
+      - name: Tests with plain canvas plots (no Pillow rendering)
+        run: CAPLAB_ANTIALIAS=0 xvfb-run -a python -B -m unittest discover -s tests -p 'test_*.py'
       - name: Synthetic examples rebuild
         run: |
           cp -r examples "$RUNNER_TEMP/examples-committed"
           python -B -m caplab.demo
           python -B -m caplab.tank_example
+          python -B -m caplab.thermo_example
           python scripts/compare_numeric_tree.py "$RUNNER_TEMP/examples-committed" examples

@@ -28,14 +28,63 @@ def simulation_grid(settings):
     if any(f < start or f > stop for f in observations):
         raise ValueError('Observation frequencies must be inside the simulation range.')
     if start == stop:
-        return with_reference([start], settings)
+        return with_reference(with_refinement([start], settings), settings)
     if mode == 'linear':
         grid = [start + (stop - start) * i / (count - 1) for i in range(count)]
     else:
         ratio = math.log(stop) - math.log(start)
         grid = [start * math.exp(ratio * i / (count - 1)) for i in range(count)]
     grid[0], grid[-1] = start, stop
-    return with_reference(grid, settings)
+    return with_reference(with_refinement(grid, settings), settings)
+
+
+def refinement_points(centers, start, stop, half_width=0.006, step=0.001):
+    """Dense points within +/- half_width (relative) around each frequency.
+
+    Overlapping windows (many codes with close f0) are merged into one band and
+    filled with a constant relative step, so 256 codes cost a few hundred points,
+    not 256 separate clusters.
+    """
+    spans = sorted((max(start, f * (1 - half_width)), min(stop, f * (1 + half_width)))
+                   for f in set(float(c) for c in centers))
+    merged = []
+    for lo, hi in spans:
+        if hi <= lo:
+            continue
+        if merged and lo <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], hi)
+        else:
+            merged.append([lo, hi])
+    out = []
+    for lo, hi in merged:
+        n = max(2, int(math.ceil(math.log(hi / lo) / math.log(1 + step))) + 1)
+        out += [lo * (hi / lo) ** (k / (n - 1)) for k in range(n)]
+    return out
+
+
+def with_refinement(grid, settings):
+    """Tank scan: extra sweep points clustered around each code's f0 (settings['tank_refine']).
+
+    The stored value is a list of center frequencies; the base sweep is kept, so
+    wide curves stay intact while every f0 is bracketed to about 0.1 %.
+    """
+    centers = settings.get('tank_refine') or []
+    if not centers:
+        return grid
+    if isinstance(centers, str):
+        from .model import frequencies
+        centers = frequencies(centers)
+    lo, hi = grid[0], grid[-1]
+    extra = refinement_points(centers, lo, hi)
+    merged = sorted(set(grid) | set(extra))
+    out = []
+    for f in merged:   # drop near-duplicates, never the base end points
+        if out and f - out[-1] <= 1e-9 * f:
+            continue
+        out.append(f)
+    if len(out) > 10001:
+        raise ValueError('Too many sweep points after f0 refinement; clear the refinement or use fewer base points.')
+    return out
 
 
 def with_reference(grid, settings):

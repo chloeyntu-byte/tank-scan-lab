@@ -139,11 +139,11 @@ def make_workbook():
         rows += spectrum
     p['private'] = {'spectrum': {'version': 2, 'rows': rows}, 'loss_spectrum': loss, 'loss_plan': plan}
     page = {'id': 'ideal_tank', 'name': 'Ideal tank scan', 'project': p, 'result': None,
-            'measurement_view': 'Tank scan', 'editor': {'tab': 'results'},
+            'measurement_view': 'Resonance / tank', 'editor': {'tab': 'results'},
             'tank': {'roles': {'IND': 'inductor', 'ARR': 'array', 'GM': 'gm'},
                      'contains': {'inductor': True, 'array': True, 'gm': True}, 'gm_ref': '10M'}}
     return {'kind': 'caplab-workbook', 'version': 3, 'active_page': page['id'], 'pages': [page],
-            'appearance': {'canvas': 'black', 'plot': 'black'},
+            'appearance': {'canvas': 'black', 'plot': 'neon', 'ui': 'dark'},
             'description': 'Synthetic tank scan: analytic centre-tapped L (0.5 nH + 1.2 ohm per half), '
                            'switched C (0.25 pF x (2 + code), 0.4 mS) and a cross-coupled pair '
                            '(gm 20 mS, gds 1.5 mS, Cg 0.15 pF per side). No device models.'}

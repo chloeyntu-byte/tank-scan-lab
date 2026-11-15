@@ -87,7 +87,21 @@ def fixture_plan(project, cfg):
             labels.setdefault(inst['id'], {})[pin['name']] = ','.join(isolated)
     return {'probes': probes, 'labels': labels,
             'instances': [inst for inst in project['instances'] if inst.get('enabled', True)],
-            'port_fixture': 'ground_50ohm_each' if cfg.get('decomposition') else 'differential_50ohm'}
+            'port_fixture': 'ground_50ohm_each' if cfg.get('decomposition') else 'differential_50ohm',
+            'port2': bool(cfg.get('port2') and cfg.get('decomposition'))}
+
+
+# CAL_LOSS_MODE selects one native AC excitation per Maestro test.  With port 2 the
+# four modes are: 0 P->N, 1 into P, 2 P2->N2, 3 into P2 (1 A peak each).  The
+# indicator polynomials are exact for m in {0, 1, 2, 3}.
+_MODE_GAIN = {0: '(1-CAL_LOSS_MODE)*(2-CAL_LOSS_MODE)*(3-CAL_LOSS_MODE)/6',
+              1: 'CAL_LOSS_MODE*(2-CAL_LOSS_MODE)*(3-CAL_LOSS_MODE)/2',
+              2: 'CAL_LOSS_MODE*(CAL_LOSS_MODE-1)*(3-CAL_LOSS_MODE)/2',
+              3: 'CAL_LOSS_MODE*(CAL_LOSS_MODE-1)*(CAL_LOSS_MODE-2)/6'}
+# Injection (into P, N, P2, N2) of each excitation, before the 50-ohm fixture currents.
+SOURCES = {0: (1, -1, 0, 0), 1: (1, 0, 0, 0), 2: (0, 0, 1, -1), 3: (0, 0, 1, 0)}
+STATE_KEYS = (('input', 'input2', 'pins'), ('cm_input', 'cm_input2', 'cm_pins'),
+              ('p2_input', 'p2_input2', 'p2_pins'), ('p2cm_input', 'p2cm_input2', 'p2cm_pins'))
 
 
 def pin_label(plan, instance_id, pin_name):
@@ -105,23 +119,22 @@ def fixture_skill(plan):
         body.append('calSource(cv {} list({} {}) {} {} "0" "0" "0")\n'.format(
             _sq(p['name']), 20 + (index % 8)*2, 5 + (index // 8)*2,
             _sq(p['net']), _sq(p['node'])))
-    body.append('''m=dbOpenCellViewByType("analogLib" "isource" "symbol" "" "r")
-unless(m error("Missing analogLib isource"))
-i=dbCreateInst(cv m "CAL_LOSS_I" list(20 2) "R0")
+    two = plan.get('port2')
+    sources = [('CAL_LOSS_I', 20, _MODE_GAIN[0] if two else '1-CAL_LOSS_MODE', 'CAL_N', 'CAL_P'),
+               ('CAL_LOSS_CM', 22, _MODE_GAIN[1] if two else 'CAL_LOSS_MODE', 'CAL_VSS', 'CAL_P')]
+    if two:
+        sources += [('CAL_LOSS_I2', 24, _MODE_GAIN[2], 'CAL_N2', 'CAL_P2'),
+                    ('CAL_LOSS_CM2', 26, _MODE_GAIN[3], 'CAL_VSS', 'CAL_P2')]
+    body.append('m=dbOpenCellViewByType("analogLib" "isource" "symbol" "" "r")\nunless(m error("Missing analogLib isource"))\n')
+    for name, x, gain, plus, minus in sources:
+        body.append('''i=dbCreateInst(cv m {name} list({x} 2) "R0")
 dbReplaceProp(i "srcType" "string" "dc")
 dbReplaceProp(i "idc" "string" "0")
 dbReplaceProp(i "smallSig" "boolean" t)
-dbReplaceProp(i "acm" "string" "1-CAL_LOSS_MODE")
+dbReplaceProp(i "acm" "string" {gain})
 dbReplaceProp(i "acp" "string" "0")
-calStub(cv i "PLUS" "CAL_N") calStub(cv i "MINUS" "CAL_P")
-i=dbCreateInst(cv m "CAL_LOSS_CM" list(22 2) "R0")
-dbReplaceProp(i "srcType" "string" "dc")
-dbReplaceProp(i "idc" "string" "0")
-dbReplaceProp(i "smallSig" "boolean" t)
-dbReplaceProp(i "acm" "string" "CAL_LOSS_MODE")
-dbReplaceProp(i "acp" "string" "0")
-calStub(cv i "PLUS" "CAL_VSS") calStub(cv i "MINUS" "CAL_P")
-''')
+calStub(cv i "PLUS" {plus}) calStub(cv i "MINUS" {minus})
+'''.format(name=_sq(name), x=x, gain=_sq(gain), plus=_sq(plus), minus=_sq(minus)))
     return ''.join(body)
 
 
@@ -150,6 +163,15 @@ def reader_skill(plan):
     calLA=drGetElem(calLPV calLI) calLB=drGetElem(calLNV calLI)
     fprintf(o "LOSS_INPUT\\t%.17g\\t%.17g\\t%.17g\\t%.17g\\t%.17g\\n" drGetElem(calLX calLI) real(calLA) imag(calLA) real(calLB) imag(calLB)))
 ''']
+    if plan.get('port2'):
+        body.append('''  calLP2=getData("CAL_P2" ?result "ac") calLN2=getData("CAL_N2" ?result "ac")
+  unless(calLP2 && calLN2 error("Missing native port-2 voltages"))
+  calLP2V=drGetWaveformYVec(calLP2) calLN2V=drGetWaveformYVec(calLN2)
+  unless(drVectorLength(calLX)==drVectorLength(calLP2V) && drVectorLength(calLX)==drVectorLength(calLN2V) error("Port-2 voltage grid mismatch"))
+  for(calLI 0 drVectorLength(calLX)-1
+    calLA=drGetElem(calLP2V calLI) calLB=drGetElem(calLN2V calLI)
+    fprintf(o "LOSS_INPUT2\\t%.17g\\t%.17g\\t%.17g\\t%.17g\\t%.17g\\n" drGetElem(calLX calLI) real(calLA) imag(calLA) real(calLB) imag(calLB)))
+''')
     for index, p in enumerate(plan['probes']):
         body.append('''  calLV=getData({node} ?result "ac") calLC=getData({current} ?result "ac")
   unless(calLV && calLC error("Missing native loss terminal waveform"))
@@ -178,6 +200,14 @@ def parse_records(lines, plan):
             if 'input' in item:
                 raise ValueError('Duplicate loss input sample.')
             item['input'] = [pr, pi, nr, ni]
+        elif fields[0] == 'LOSS_INPUT2':
+            if len(fields) != 6:
+                raise ValueError('Malformed port-2 loss input record.')
+            f, pr, pi, nr, ni = map(float, fields[1:])
+            item = samples.setdefault(f, {'frequency_Hz': f, 'pins': {}})
+            if 'input2' in item:
+                raise ValueError('Duplicate port-2 loss input sample.')
+            item['input2'] = [pr, pi, nr, ni]
         elif fields[0] == 'LOSS_PIN':
             if len(fields) != 7:
                 raise ValueError('Malformed loss pin record.')
@@ -192,25 +222,77 @@ def parse_records(lines, plan):
     rows = [samples[f] for f in sorted(samples)]
     if not rows or any('input' not in row or len(row['pins']) != expected for row in rows):
         raise ValueError('Incomplete native loss waveforms.')
+    if plan.get('port2') and any('input2' not in row for row in rows):
+        raise ValueError('Incomplete native port-2 voltages.')
     if any(not math.isfinite(v) for row in rows for v in
-           ([row['frequency_Hz']] + row['input'] + [n for p in row['pins'].values() for n in p])):
+           ([row['frequency_Hz']] + row['input'] + row.get('input2', []) + [n for p in row['pins'].values() for n in p])):
         raise ValueError('Non-finite native loss waveform.')
     return rows
 
 
-def combine_records(differential, common, plan):
-    """Pair independently simulated excitation waveforms by exact frequency."""
-    if len(differential) != len(common):
+def combine_records(differential, common, plan, port2=()):
+    """Pair independently simulated excitation waveforms by exact frequency.
+
+    port2: the waveforms of the two port-2 excitations (modes 2 and 3), if any.
+    """
+    states = [differential, common] + list(port2)
+    if any(len(x) != len(differential) for x in states):
         raise ValueError('Loss excitation sweep sizes differ.')
     out = []
-    for a, b in zip(differential, common):
-        if a['frequency_Hz'] != b['frequency_Hz'] or set(a['pins']) != set(b['pins']):
+    for group in zip(*states):
+        a = group[0]
+        if any(b['frequency_Hz'] != a['frequency_Hz'] or set(b['pins']) != set(a['pins']) for b in group):
             raise ValueError('Loss excitation identities or frequency grids differ.')
         item = dict(a)
-        item['cm_input'] = b['input']
-        item['cm_pins'] = b['pins']
+        for keys, b in zip(STATE_KEYS[1:], group[1:]):
+            item[keys[0]] = b['input']
+            item[keys[2]] = b['pins']
+            if 'input2' in b:
+                item[keys[1]] = b['input2']
         out.append(item)
     return out
+
+
+def port_states(sample):
+    """Raw excitation states: [(node voltages [P, N, P2, N2], pins, source injection), ...]."""
+    out = []
+    for mode, keys in enumerate(STATE_KEYS):
+        if keys[0] not in sample:
+            break
+        v = [complex(*sample[keys[0]][:2]), complex(*sample[keys[0]][2:4])]
+        if keys[1] in sample:
+            v += [complex(*sample[keys[1]][:2]), complex(*sample[keys[1]][2:4])]
+        out.append((v, sample[keys[2]], SOURCES[mode]))
+    return out
+
+
+def _reconstruct_port2(sample, f):
+    """Port 1 floating 1 A drive with port 2 open, from four native excitations.
+
+    Every node P, N, P2, N2 carries a 50-ohm ground port.  The DUT injection of
+    state k is J_k = s_k - V_k / 50; the combination c with sum c_k J_k = (1, -1, 0, 0)
+    is the requested state, so no fixture current flows into the DUT at port 2.
+    """
+    from .linalg import solve
+    states = port_states(sample)
+    if len(states) != 4 or any(len(v) != 4 for v, pins, src in states):
+        return {'available': False, 'reason': 'Missing a native port-2 excitation.', 'modules': {}, 'frequency_Hz': f, 'estimated': False}
+    jmat = [[states[k][2][n] - states[k][0][n] / 50.0 for k in range(4)] for n in range(4)]
+    c = solve(jmat, [1, -1, 0, 0], rtol=1e-12)
+    if c is None:
+        return {'available': False, 'reason': 'Port-1 drive with port 2 open is not identified by the four excitations.',
+                'modules': {}, 'frequency_Hz': f, 'estimated': False}
+    v = [sum(c[k] * states[k][0][n] for k in range(4)) for n in range(4)]
+    pins = {}
+    for key in sample['pins']:
+        voltage = sum(c[k] * complex(*states[k][1][key][:2]) for k in range(4))
+        current = sum(c[k] * complex(*states[k][1][key][2:4]) for k in range(4))
+        pins[key] = [voltage.real, voltage.imag, current.real, current.imag]
+    source_power = 0.5 * sum((v[n] * sum(c[k] * states[k][2][n] for k in range(4)).conjugate()).real for n in range(4))
+    fixture_power = 0.5 * sum(abs(x) ** 2 for x in v) / 50.0
+    return {'available': True, 'vp': v[0], 'vn': v[1], 'v2': (v[2], v[3]), 'sample': dict(sample, pins=pins),
+            'power': 0.5 * (v[0] - v[1]).real, 'source_power': source_power, 'fixture_power': fixture_power,
+            'coefficients': c, 'condition': 'floating P/N drive, port 2 open, from four native AC excitations'}
 
 
 def reconstruct_sample(sample, plan, f=None):
@@ -223,6 +305,14 @@ def reconstruct_sample(sample, plan, f=None):
     vp = complex(*sample['input'][:2])
     vn = complex(*sample['input'][2:])
     fixture = plan.get('port_fixture', 'none')
+    if fixture == 'ground_50ohm_each' and plan.get('port2'):
+        rec = _reconstruct_port2(sample, f)
+        if rec['available']:
+            balance_error = rec['source_power'] - rec['fixture_power'] - rec['power']
+            if abs(balance_error) > 1e-9 * max(abs(rec['source_power']), abs(rec['fixture_power']), abs(rec['power']), 1e-300):
+                return {'available': False, 'reason': 'Native source and fixture power are inconsistent.',
+                        'modules': {}, 'frequency_Hz': f, 'estimated': False}
+        return rec
     if fixture == 'ground_50ohm_each':
         if 'cm_input' not in sample or 'cm_pins' not in sample:
             return {'available': False, 'reason': 'Missing independent common-mode native AC excitation.',

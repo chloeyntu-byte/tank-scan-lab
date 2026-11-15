@@ -34,13 +34,14 @@ import json
 import math
 
 from .loss_native import reconstruct_sample
-from .resonance import find_first_resonance
+from .resonance import find_first_resonance, find_resonances
 
 ROLES = ('inductor', 'array', 'gm', 'load', 'ignore')
 ROLE_LABELS = {'inductor': 'Inductor / N-port', 'array': 'Cap array', 'gm': 'gm core',
                'load': 'Other load', 'ignore': 'Excluded from tank'}
 CONTENT_KEYS = ('inductor', 'array', 'gm')
 P_NET, N_NET = 'CAL_P', 'CAL_N'
+PORT_NETS = ('CAL_P', 'CAL_N', 'CAL_P2', 'CAL_N2')
 
 
 # ---------------------------------------------------------------- roles / mode
@@ -79,7 +80,18 @@ def tank_settings(page, project):
         if key not in contains:
             contains[key] = any(v == key for v in roles.values())
     stored.update(roles=roles, contains=contains)
-    return {'roles': dict(roles), 'contains': dict(contains)}
+    return {'roles': dict(roles), 'contains': dict(contains), 'loss_split': stored.get('loss_split', True) is not False}
+
+
+def has_port2(project):
+    """True when canvas pins carry the optional port-2 roles P2/N2."""
+    return any(v in ('P2', 'N2') for n in project.get('instances', []) if n.get('enabled', True)
+               for v in (n.get('roles') or {}).values())
+
+
+def needs_module_currents(settings):
+    """Native module currents are captured for the loss split, and always with a gm core."""
+    return bool(settings.get('loss_split', True)) or backend_mode(settings) == 'active'
 
 
 def effective_roles(settings):
@@ -177,36 +189,63 @@ def sample_admittances(sample, plan, roles):
     modules = {name: 2 * s.conjugate() / norm for name, s in power.items()}
     out = {'available': True, 'frequency_Hz': f, 'modules': modules, 'module_role': role_of, 'vp': rec['vp'], 'vn': rec['vn'],
            'total': sum(modules.values()), 'input_total': 1 / vd, 'gm': {}}
-    # gm cores: 2x2 effective P/N admittance from the two raw excitations.
+    # gm cores: effective admittance on the measurement nets (P, N and, with port 2, P2, N2),
+    # identified from the raw native excitations (two, or four with port 2).
+    from .loss_native import port_states
+    from .linalg import solve
     gm_names = sorted({label[pr['instance']] for pr in probes if role_of.get(label.get(pr['instance'])) == 'gm'})
-    if gm_names and ('cm_input' not in sample or 'cm_pins' not in sample):
+    states = port_states(sample)
+    n = len(states[0][0]) if states else 0
+    if gm_names and (len(states) < 2 or len(states) != n):
         return {'available': False, 'frequency_Hz': f,
-                'reason': 'gm-core analysis needs both native excitations (run with two-port separation).'}
+                'reason': 'gm-core analysis needs every native excitation (run with two-port separation).'}
+    v_now = [rec['vp'], rec['vn']] + list(rec.get('v2') or ())
+    out['v'] = v_now
     for name in gm_names:
-        states_v, states_i = [], []
-        for vin, pins in ((sample['input'], sample['pins']), (sample['cm_input'], sample['cm_pins'])):
-            ip = inn = 0j
+        vmat_t = [list(v) for v, pins, src in states]                      # states x nets
+        imat_t = []
+        for v, pins, src in states:
+            cur = [0j] * n
             for index, probe in enumerate(probes):
-                if label.get(probe['instance']) != name:
-                    continue
-                cur = complex(*pins[str(index)][2:4])
-                if probe['net'] == P_NET:
-                    ip += cur
-                elif probe['net'] == N_NET:
-                    inn += cur
-            states_v.append((complex(*vin[:2]), complex(*vin[2:4])))
-            states_i.append((ip, inn))
-        vmat = [[states_v[0][0], states_v[1][0]], [states_v[0][1], states_v[1][1]]]
-        imat = [[states_i[0][0], states_i[1][0]], [states_i[0][1], states_i[1][1]]]
-        y = _solve2(vmat, imat)
-        if y is None:
+                if label.get(probe['instance']) == name and probe['net'] in PORT_NETS[:n]:
+                    cur[PORT_NETS.index(probe['net'])] += complex(*pins[str(index)][2:4])
+            imat_t.append(cur)
+        yt = solve(vmat_t, imat_t)                                        # V^T Y^T = I^T
+        if yt is None:
             return {'available': False, 'frequency_Hz': f,
-                    'reason': 'The two native excitations do not identify the gm core admittance (singular P/N states).'}
-        g_neg = cross_conductance(y[0][1], y[1][0], rec['vp'], rec['vn'])
-        out['gm'][name] = {'Y': y, 'gm_S': (y[0][1] + y[1][0]).real / 2, 'gload_S': (y[0][0] + y[1][1]).real / 2,
+                    'reason': 'The native excitations do not identify the gm core admittance (singular node states).'}
+        y = [[yt[j][i] for j in range(n)] for i in range(n)]
+        touched = {PORT_NETS.index(pr['net']) for pr in probes
+                   if label.get(pr['instance']) == name and pr['net'] in PORT_NETS[:n]}
+        ctrl = (2, 3) if n == 4 and touched & {2, 3} else (0, 1)
+        g_neg = cross_conductance_matrix(off_diagonal(y), v_now)
+        out['gm'][name] = {'Y': y, 'ctrl': ctrl, 'gm_S': transconductance(y, ctrl).real,
+                           'gload_S': (y[0][0] + y[1][1]).real / 2,
                            'G_neg_S': g_neg, 'G_load_S': modules[name].real + g_neg,
-                           'touches_PN': any(label.get(pr['instance']) == name and pr['net'] in (P_NET, N_NET) for pr in probes)}
+                           'touches_PN': bool(touched & {0, 1})}
     return out
+
+
+def off_diagonal(y, real=False):
+    return [[0j if i == j else (complex(y[i][j].real) if real else y[i][j]) for j in range(len(y))] for i in range(len(y))]
+
+
+def transconductance(y, ctrl):
+    """Per-side differential transconductance from the control nets to the drain nets (P, N).
+
+    gm = -(u_D^T Y u_C) / 2 with u = (+1, -1); self terms are excluded when the
+    control nets are the drains themselves (gates on the opposite drains).
+    """
+    yx = off_diagonal(y) if ctrl == (0, 1) else y
+    (a, b), (c, d) = ctrl, (0, 1)
+    return -(yx[0][a] - yx[0][b] - yx[1][a] + yx[1][b]) / 2
+
+
+def cross_conductance_matrix(yx, v):
+    """Negative conductance delivered by the cross terms yx under node voltages v (port-1 normalized)."""
+    n = len(yx)
+    p_cross = 0.5 * sum((v[i].conjugate() * yx[i][j] * v[j]).real for i in range(n) for j in range(n))
+    return -2 * p_cross / abs(v[0] - v[1]) ** 2
 
 
 def cross_conductance(y12, y21, vp, vn):
@@ -221,8 +260,7 @@ def apply_reference_gm(per):
     ref = per[0]['gm']
     for sa in per:
         for name, item in sa['gm'].items():
-            y = ref[name]['Y']
-            neg = cross_conductance(complex(y[0][1].real), complex(y[1][0].real), sa['vp'], sa['vn'])
+            neg = cross_conductance_matrix(off_diagonal(ref[name]['Y'], real=True), sa['v'])
             item['G_neg_ref_S'] = neg
             item['G_load_ref_S'] = sa['modules'][name].real + neg
 
@@ -284,10 +322,34 @@ def analyze_point(spectrum_samples, loss_samples, plan, roles, mode, sweep_start
 
     sweep_start excludes the low gm reference sample from the resonance search,
     the f0 bracket and the LC-only crossing; it is still used for gm/gds(f_ref).
+    With a gm core and several resonances (e.g. the two modes of a transformer
+    tank) f0 is the crossing with the largest startup margin; all are listed.
     """
+    search = sweep_samples(spectrum_samples or [], sweep_start)
+    if mode != 'active' or not loss_samples or not plan or len(search) < 2:
+        return _analyze_at(None, spectrum_samples, loss_samples, plan, roles, mode, sweep_start)
+    found = [r for r in find_resonances(search) if r.get('available')]
+    parallel = [r for r in found if r.get('kind') == 'parallel-like']
+    found = parallel or found
+    if len(found) <= 1:
+        return _analyze_at(found[0] if found else None, spectrum_samples, loss_samples, plan, roles, mode, sweep_start)
+    results = [_analyze_at(r, spectrum_samples, loss_samples, plan, roles, mode, sweep_start) for r in found]
+    scored = [r for r in results if r.get('available') and r.get('margin') is not None]
+    best = max(scored, key=lambda r: r['margin']) if scored else results[0]
+    best['modes'] = [{'f0_Hz': r.get('f0_Hz'), 'margin': r.get('margin')} for r in results]
+    if len(results) > 1:
+        note = '{} resonances; f0 = the one with the largest margin ({}).'.format(
+            len(results), ', '.join('{:.4g} GHz{}'.format(m['f0_Hz'] / 1e9, '' if m['margin'] is None else ' m={:.3g}'.format(m['margin']))
+                                   for m in best['modes'] if m['f0_Hz']))
+        best['warning'] = (best.get('warning', '') + ' ' + note).strip()
+    return best
+
+
+def _analyze_at(found, spectrum_samples, loss_samples, plan, roles, mode, sweep_start=None):
     res = {'available': False, 'mode': mode}
     search = sweep_samples(spectrum_samples or [], sweep_start)
-    found = find_first_resonance(search) if len(search) >= 2 else {'available': False, 'reason': 'No saved SP spectrum.'}
+    if found is None:
+        found = find_first_resonance(search) if len(search) >= 2 else {'available': False, 'reason': 'No saved SP spectrum.'}
     if not found.get('available'):
         res['reason'] = found.get('reason', 'No resonance in the simulated range.')
         return res
@@ -378,6 +440,8 @@ def analyze_point(spectrum_samples, loss_samples, plan, roles, mode, sweep_start
                    gmRp_f0=(gm_f0 / g_loss) if g_loss > 0 else None)
         if xs[0] > f0 / 5:
             res['warning'] = 'Lowest simulated frequency is above f0/5; gm(f_ref) is not a low-frequency value.'
+        res['gain_curve'] = gain_curve(xs[k0:], per[k0:], sums[k0:])
+        res.update(loop_gain(spectrum_samples, per, xs, lo, hi, t, sums[0][2], res))
     # Per-module contributions at f0.
     names = sorted(per[lo]['modules'])
     contrib = []
@@ -400,6 +464,76 @@ def analyze_point(spectrum_samples, loss_samples, plan, roles, mode, sweep_start
     if width > 0.01 and 'warning' not in res:
         res['warning'] = 'f0 bracket is {:.1%} wide; narrow the sweep around f0 for tank-scan accuracy.'.format(width)
     return res
+
+
+def loop_gain(spectrum_samples, per, xs, lo, hi, t, gm_ref, res):
+    """Startup loop gain gm * Z, as in the VCO design system's tank scan.
+
+    Gates on the opposite drains: Z = Z11 of the gm-cancelled tank = Rp(LC+loading),
+    so the gain is gm*Rp.  Gates on port 2 (transformer-coupled core): Z = Z21 of the
+    gm-cancelled tank (drain current -> gate voltage), from the saved 4-port Y with
+    the core's low-frequency cross terms removed.
+    """
+    ctrl = next((item['ctrl'] for item in per[0]['gm'].values() if item['ctrl'] == (2, 3)), (0, 1))
+    if ctrl == (0, 1):
+        rp = res.get('Rp_loaded_ohm')
+        return {'gain': gm_ref * rp if rp else None, 'gain_kind': 'gm*Z11', 'core_gates': 'on P/N'}
+    from .twoport import has_port2, full_matrix, z_pair
+    pairs = []
+    for k in (lo, hi):
+        s = min(spectrum_samples or [{}], key=lambda r: abs(r.get('frequency_Hz', 0) - xs[k]))
+        if abs(s.get('frequency_Hz', 0) - xs[k]) > 1e-9 * xs[k]:
+            s = None
+        if s is None or not has_port2(s):
+            return {'gain_kind': 'gm*Z21', 'core_gates': 'on port 2',
+                    'gain_reason': 'Saved spectrum has no port-2 matrix at the f0 bracket.'}
+        y = full_matrix(s)
+        for item in per[0]['gm'].values():
+            yx = off_diagonal(item['Y'], real=True)
+            for i in range(len(yx)):
+                for j in range(len(yx)):
+                    y[i][j] -= yx[i][j]
+        z = z_pair(y)
+        if z is None:
+            return {'gain_kind': 'gm*Z21', 'core_gates': 'on port 2', 'gain_reason': 'gm-cancelled 4-port is singular.'}
+        pairs.append(z)
+    z11 = _interp(pairs[0][0], pairs[1][0], t)
+    z21 = _interp(pairs[0][1], pairs[1][1], t)
+    return {'gain': gm_ref * z21.real, 'gain_kind': 'gm*Z21', 'core_gates': 'on port 2',
+            'Z11_off_ohm': [z11.real, z11.imag], 'Z21_off_ohm': [z21.real, z21.imag],
+            'gate_ratio': z21.real / z11.real if z11.real else None}
+
+
+def gain_curve(xs, per, sums):
+    """Small-signal loop gain T(f) = G_neg(f) / Y_loss(f) on the sweep samples.
+
+    Y_loss = Y_d + G_neg is the tank admittance with the core's negative
+    conductance removed (same G_neg definition as at f0).  At f0, where
+    Im Y_d = 0, |T| equals the startup margin and the phase of T is zero.
+    """
+    out = []
+    for f, sa, sm in zip(xs, per, sums):
+        g_neg = sm[0]['gm_neg']
+        y_loss = sa['total'] + g_neg
+        if abs(y_loss) > 0:
+            t = g_neg / y_loss
+            out.append((f, t.real, t.imag))
+    return out
+
+
+def z11_curve(samples):
+    """(f, Re Z11, Im Z11) of the complete circuit from the saved two-port sweep."""
+    from .resonance import _impedance, _KEYS
+    out = []
+    for sample in sorted(samples, key=lambda r: r['frequency_Hz']):
+        try:
+            f = float(sample['frequency_Hz'])
+            z = _impedance(f, [float(sample[k]) for k in _KEYS])
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            continue
+        if z is not None:
+            out.append((f, z.real, z.imag))
+    return out
 
 
 def sweep_start(project):
@@ -445,7 +579,15 @@ def tank_data(project, page_settings):
         identity = {name: samples[0][name] for name in names}
         identity.update({'point': key} if 'point' in samples[0] else {'code': key})
         if issues:
-            result = {'available': False, 'reason': ' '.join(issues)}
+            # Roles only matter for the split; f0 and Re Z at f0 are still reported.
+            try:
+                result = analyze_point(samples, None, None, roles, 'passive', sweep_start(project))
+            except (ValueError, KeyError, TypeError, ZeroDivisionError) as ex:
+                result = {'available': False, 'reason': str(ex)}
+            if result.get('available'):
+                result['reason'] = 'Module split unavailable: ' + ' '.join(issues)
+            else:
+                result['reason'] = '{} {}'.format(result.get('reason', ''), ' '.join(issues)).strip()
         else:
             loss = (private.get('loss_spectrum') or {}).get(str(key))
             try:
@@ -454,11 +596,21 @@ def tank_data(project, page_settings):
                 result = {'available': False, 'reason': str(ex)}
         row = dict(identity)
         row['tank'] = result
+        row['z11'] = z11_curve(sweep_samples(samples, sweep_start(project)))
+        from .twoport import z21_curve as _z21
+        z2 = _z21(sweep_samples(samples, sweep_start(project)))
+        if z2:
+            row['z21'] = [(f, z21.real, z21.imag) for f, z11, z21 in z2]
         rows.append(row)
-    message = ('Startup analysis at the first Im(Z)=0 of the complete circuit. margin = G_neg / G_loss (> 1 starts); '
-               'gm*Rp uses the terminal gm at the lowest simulated frequency.') if mode == 'active' else \
+    message = ('Startup analysis at Im(Z11)=0 of the complete circuit (port 2 open). margin = G_neg / G_loss (> 1 starts); '
+               'loop gain gm*Z uses the terminal gm at the lowest simulated frequency (Z21 when the core gates are on port 2).') if mode == 'active' else \
               'Passive tank: resonance, Rp and per-module loss at the first Im(Z)=0 crossing.'
     return {'rows': rows, 'names': names, 'mode': mode, 'issues': issues, 'message': message}
+
+
+def refine_centers(rows):
+    """f0 of every resolved code: the centers for per-code sweep refinement."""
+    return sorted({round(r['tank']['f0_Hz'], 3) for r in rows if (r.get('tank') or {}).get('f0_Hz')})
 
 
 def suggested_sweep(rows, points=201):

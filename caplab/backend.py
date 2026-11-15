@@ -34,6 +34,23 @@ def sl(values):
     return 'list(' + ' '.join(sq(v) for v in values) + ')'
 
 
+def port_names(cfg):
+    """Ground-referenced SP ports in index order: P, N and, with the optional port 2, P2, N2."""
+    return ('P', 'N', 'P2', 'N2') if cfg.get('port2') else ('P', 'N')
+
+
+def loss_tests(cfg):
+    """Native AC excitation tests: (test name, CAL_LOSS_MODE)."""
+    tests = [('CAP_SP', 0), ('CAP_LOSS_CM', 1)]
+    if cfg.get('port2'):
+        tests += [('CAP_LOSS_P2', 2), ('CAP_LOSS_P2CM', 3)]
+    return tests
+
+
+def loss_code_output(mode):
+    return 'CODE_VALUE' if mode == 0 else 'LOSS_CODE_VALUE' if mode == 1 else 'LOSS{}_CODE_VALUE'.format(mode)
+
+
 def floating_y_expression(a, b, c, d):
     """Native scalar Schur reduction, retaining a completely floating DUT.
 
@@ -516,6 +533,8 @@ close(o) dbClose(cv)
         models = [] if pure_analog else self.reference_models(project, libs)
         capture_loss = bool(project['settings'].get('capture_loss', False)) and cfg['analysis'] == 'sp'
         cfg['capture_loss'] = capture_loss
+        if cfg.get('port2') and not cfg['decomposition']:
+            raise ValueError('Port 2 (P2/N2) needs the SP two-port separation (Separate coupling / ground).')
         loss_plan = loss_native.fixture_plan(project, cfg) if capture_loss else None
         self.activity('Building private schematic…', 0, 3)
         uid = datetime.now().strftime('%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:6]
@@ -587,14 +606,14 @@ dbReplaceProp(i "srcType" "string" "dc")
 dbReplaceProp(i "r" "string" "50")
 '''
             body += 'dbReplaceProp(i "num" "string" {})\ncalStub(cv i "PLUS" "CAL_P") calStub(cv i "MINUS" {})\n'.format(
-                sq('3' if cfg['decomposition'] else '1'), sq('CAL_BIAS_N' if cfg['decomposition'] else 'CAL_N'))
+                sq(('5' if cfg.get('port2') else '3') if cfg['decomposition'] else '1'), sq('CAL_BIAS_N' if cfg['decomposition'] else 'CAL_N'))
             if cfg['decomposition']:
                 body += '''m=dbOpenCellViewByType("analogLib" "dcfeed" "symbol" "" "r")
 unless(m error("Ideal DC feed is unavailable"))
 i=dbCreateInst(cv m "DC_BIAS" list(-3 2) "R0")
 calStub(cv i "PLUS" "CAL_BIAS_N") calStub(cv i "MINUS" "CAL_N")
 '''
-                for index, name in enumerate(('P', 'N'), 1):
+                for index, name in enumerate(port_names(cfg), 1):
                     body += '''m=dbOpenCellViewByType("analogLib" "port" "symbol" "" "r")
 i=dbCreateInst(cv m {port} list({x} 0) "R0")
 dbReplaceProp(i "srcType" "string" "dc")
@@ -721,7 +740,7 @@ unless(tests && member(%s cadr(tests)) error("Projected test readback differs"))
         if cfg.get('decomposition'):
             probes = {'PORT0.PLUS':'CAL_P', 'PORT0.MINUS':'CAL_BIAS_N',
                       'DC_BIAS.PLUS':'CAL_BIAS_N', 'DC_BIAS.MINUS':'CAL_N'}
-            for name in ('P', 'N'):
+            for name in port_names(cfg):
                 probes.update({'PORT_'+name+'.PLUS':'CAL_PROBE_'+name,
                                'PORT_'+name+'.MINUS':'CAL_VSS',
                                'DC_BLOCK_'+name+'.PLUS':'CAL_PROBE_'+name,
@@ -756,7 +775,7 @@ unless(maeCreateTest("CAP_AC" ?lib %s ?cell %s ?view "config" ?simulator "spectr
         body += 'unless(maeSetEnvOption("CAP_AC" ?options list(list("modelFiles" {}) list("controlMode" "batch")) ?session s) error("Cannot set models"))\n'.format(models)
         values = 'list(' + ' '.join(sq('{:.17g}'.format(f)) for f in cfg['simulation_frequencies']) + ')'
         if cfg.get('analysis') == 'sp':
-            ports = 'list("/PORT_P" "/PORT_N")' if cfg.get('decomposition') else 'list("/PORT0")'
+            ports = ('list(' + ' '.join('"/PORT_{}"'.format(n) for n in port_names(cfg)) + ')') if cfg.get('decomposition') else 'list("/PORT0")'
             options = 'list(list("sweep" "Frequency") list("ports" {}) list("donoise" "no") list("useDiscrete" t) list("values" {}))'.format(ports, values)
             body += 'unless(maeSetAnalysis("CAP_AC" "sp" ?options {} ?session s) error("Cannot set SP analysis"))\n'.format(options)
         else:
@@ -801,23 +820,25 @@ unless(maeCreateTest("CAP_AC" ?lib %s ?cell %s ?view "config" ?simulator "spectr
         if m.get('loss_plan') is not None:
             body += loss_native.setup_skill(m['loss_plan'], 'CAP_AC', cfg['simulation_frequencies'])
         body = body.replace('CAP_AC', test_name)
-        if m.get('loss_plan') is not None: body += self._loss_cm_setup_body(m)
+        if m.get('loss_plan') is not None:
+            for test, mode in loss_tests(m['cfg'])[1:]:
+                body += self._loss_cm_setup_body(m, test, mode)
         body += 'maeSaveSetup(?session s)\nmaeCloseSession(?session s)\n'
         return body
 
-    def _loss_cm_setup_body(self, m):
-        cfg=m['cfg']; test='CAP_LOSS_CM'
+    def _loss_cm_setup_body(self, m, test='CAP_LOSS_CM', mode=1):
+        cfg=m['cfg']
         body='unless(maeCreateTest({} ?lib {} ?cell {} ?view "config" ?simulator "spectre" ?session s) error("Cannot create common-mode loss test"))\n'.format(sq(test),sq(m['library']),sq(m['cell']))
         models='list('+' '.join(sl(row) for row in m['models'])+')'
         body+='unless(maeSetEnvOption({} ?options list(list("modelFiles" {}) list("controlMode" "batch")) ?session s) error("Cannot set loss model files"))\n'.format(sq(test),models)
-        variables=[('CAL_POINT' if cfg.get('explicit') else 'CAL_CODE',' '.join(str(c) for c in cfg['codes'])),('CAL_VDD',str(cfg['vdd'])),('CAL_VCM',str(cfg['vcm'])),('CAL_LOSS_MODE','1')]
+        variables=[('CAL_POINT' if cfg.get('explicit') else 'CAL_CODE',' '.join(str(c) for c in cfg['codes'])),('CAL_VDD',str(cfg['vdd'])),('CAL_VCM',str(cfg['vcm'])),('CAL_LOSS_MODE',str(mode))]
         if cfg.get('explicit'):
             variables += [(r['name'],code_expression(r,cfg['registers'],cfg['sweep_mode'])) for r in cfg['registers']]
         for name,value in variables:
             body+='unless(maeSetVar({} {} ?typeValue list({}) ?session s) error("Cannot set loss test variable"))\n'.format(sq(name),sq(value),sq(test))
         body+='maeSetEnableTestVar({} {} ?enabled t ?session s)\n'.format(sq(test),sl([name for name,value in variables]))
         output='VAR("{}")'.format('CAL_POINT' if cfg.get('explicit') else 'CAL_CODE')
-        body+='unless(maeAddOutput("LOSS_CODE_VALUE" {} ?expr {} ?plot t ?save t ?session s) error("Cannot set loss identity output"))\n'.format(sq(test),sq(output))
+        body+='unless(maeAddOutput({} {} ?expr {} ?plot t ?save t ?session s) error("Cannot set loss identity output"))\n'.format(sq(loss_code_output(mode)),sq(test),sq(output))
         body+=self._fixture_options_skill(test,cfg)
         body+=loss_native.setup_skill(m['loss_plan'],test,cfg['simulation_frequencies'])
         return body
@@ -946,6 +967,14 @@ maeSaveSetup(?session s) maeCloseSession(?session s)
    unless(calY error("Floating common-mode admittance is unresolved"))
    fprintf(o "SPECTRUM\\t%.17g\\t%.17g\\t%.17g\\t%.17g\\t%.17g\\t%.17g\\t%.17g\\t%.17g\\t%.17g\\t%.17g\\t%.17g\\n" drGetElem(calX calI) real(calY) imag(calY) real(calM11) imag(calM11) real(calM12) imag(calM12) real(calM21) imag(calM21) real(calM22) imag(calM22))))'''.format(
                 total=floating_y_expression('calM11','calM12','calM21','calM22'))
+            if native_cfg.get('port2'):
+                # Full 4x4 ground-referenced Y (P, N, P2, N2); port-1 values with port 2 open are reduced in Python.
+                pairs = [(i, j) for i in range(1, 5) for j in range(1, 5)]
+                matrix = '  ' + ' '.join("calW{0}{1}=drGetWaveformYVec(ypm('sp {0} {1}))".format(i, j) for i, j in pairs) + '\n'
+                matrix += "  calX=drGetWaveformXVec(ypm('sp 1 1))\n"
+                matrix += '  unless(' + ' && '.join('drVectorLength(calW{}{})==drVectorLength(calX)'.format(i, j) for i, j in pairs) + ' error("Admittance matrix frequency coverage differs"))\n'
+                matrix += '  for(calI 0 drVectorLength(calX)-1\n   fprintf(o "SPECTRUM4\\t%.17g' + '\\t%.17g\\t%.17g' * 16 + '\\n" drGetElem(calX calI) '
+                matrix += ' '.join('real(drGetElem(calW{0}{1} calI)) imag(drGetElem(calW{0}{1} calI))'.format(i, j) for i, j in pairs) + ')))'
             body = body[:start] + matrix + body[end:]
         if m.get('loss_plan') is not None:
             marker = '\n )))\nclose(o)'
@@ -953,9 +982,9 @@ maeSaveSetup(?session s) maeCloseSession(?session s)
             pos = body.index(marker)
             before = body[:pos].rstrip()
             if not before.endswith(')'): raise RuntimeError('Cannot locate completed TEST body')
-            body = (before[:-1] + '\n' + loss_native.reader_skill(m['loss_plan']) + ')' +
-                    "\n when(test->status=='done && test->name==\"CAP_LOSS_CM\"\n  openResults(strcat(test->resultsDir \"/psf\"))\n" +
-                    loss_native.reader_skill(m['loss_plan']) + ')\n' + body[pos:])
+            extra = ''.join("\n when(test->status=='done && test->name==\"{}\"\n  openResults(strcat(test->resultsDir \"/psf\"))\n".format(test) +
+                            loss_native.reader_skill(m['loss_plan']) + ')' for test, mode in loss_tests(native_cfg)[1:])
+            body = (before[:-1] + '\n' + loss_native.reader_skill(m['loss_plan']) + ')' + extra + '\n' + body[pos:])
         simulation_root = (simulation_monitor_root(runtime, m) if runtime.get('source')
                            else str(Path(m['folder']) / 'simulation'))
         baseline = {}
@@ -965,7 +994,7 @@ maeSaveSetup(?session s) maeCloseSession(?session s)
                 baseline[str(old_log.resolve())] = (stat.st_mtime_ns, stat.st_size)
             except OSError:
                 pass
-        monitor = ({'root': str(simulation_root), 'total': len(cfg['codes']), 'codes':cfg['codes'], 'explicit':bool(cfg.get('explicit')), 'analysis':native_cfg.get('analysis'), 'tests':(['CAP_SP','CAP_LOSS_CM'] if m.get('loss_plan') is not None else ['CAP_SP' if native_cfg.get('analysis') == 'sp' else 'CAP_AC']), 'started': time.time(), 'baseline': baseline}
+        monitor = ({'root': str(simulation_root), 'total': len(cfg['codes']), 'codes':cfg['codes'], 'explicit':bool(cfg.get('explicit')), 'analysis':native_cfg.get('analysis'), 'tests':([t for t, mode in loss_tests(native_cfg)] if m.get('loss_plan') is not None else ['CAP_SP' if native_cfg.get('analysis') == 'sp' else 'CAP_AC']), 'started': time.time(), 'baseline': baseline}
                    if simulation_root else None)
         for inst in project['instances']:
             if inst.get('enabled', True) and inst.get('kind') in ('passive','snp'):
@@ -992,6 +1021,10 @@ maeSaveSetup(?session s) maeCloseSession(?session s)
         if native_cfg.get('decomposition'):
             m['spectrum']['decomposition'] = True
             m['spectrum']['fixture'] = 'Two DC-blocked ground-reference ports; original differential DC termination retained through ideal DC feed.'
+            if native_cfg.get('port2'):
+                m['spectrum']['fixture'] = ('Four DC-blocked ground-reference ports (P, N, P2, N2); Y11..Y22 are port 1 with port 2 open, '
+                                            'X keys the full 4-port Y. Original P/N DC termination retained through ideal DC feed.')
+                m['spectrum']['port2'] = True
         data = json.dumps(m['spectrum'], sort_keys=True, separators=(',', ':')).encode('utf-8')
         m['spectrum_data_sha256'] = hashlib.sha256(data).hexdigest()
         spectrum_path = Path(m['folder']) / 'spectrum.json'
@@ -1030,24 +1063,27 @@ maeSaveSetup(?session s) maeCloseSession(?session s)
         pairs = {}
         for test in tests:
             if test is None: continue
-            code = test['outputs'].get('LOSS_CODE_VALUE' if test['test']=='CAP_LOSS_CM' else 'CODE_VALUE')
-            if test['test'] not in ('CAP_SP','CAP_LOSS_CM') or test['status'] != 'done' or code is None or not code.is_integer():
+            modes = dict(loss_tests(cfg))
+            code = test['outputs'].get(loss_code_output(modes.get(test['test'], 0)))
+            if test['test'] not in modes or test['status'] != 'done' or code is None or not code.is_integer():
                 raise ValueError('Invalid native loss TEST identity')
             index = int(code)
             base=Path(test['path']); log=base/'psf'/'spectre.out'; netlist=base/'netlist'/'input.scs'
             if not log.is_file() or not netlist.is_file(): raise ValueError('Loss test native evidence is missing')
             logtext=log.read_text(encoding='utf-8',errors='replace')
             if not re.search(r'0 errors?\b',logtext) or 'completes' not in logtext: raise ValueError('Loss test Spectre did not complete successfully')
-            match=re.search(r'(?<![A-Za-z0-9_])CAL_LOSS_MODE\s*=\s*([01])(?:\D|$)',netlist.read_text(encoding='utf-8',errors='replace'))
-            if not match or int(match.group(1)) != (1 if test['test']=='CAP_LOSS_CM' else 0): raise ValueError('Loss test excitation identity does not match')
+            match=re.search(r'(?<![A-Za-z0-9_])CAL_LOSS_MODE\s*=\s*([0-3])(?:\D|$)',netlist.read_text(encoding='utf-8',errors='replace'))
+            if not match or int(match.group(1)) != modes[test['test']]: raise ValueError('Loss test excitation identity does not match')
             if index not in cfg['codes'] or test['test'] in pairs.get(index,{}): raise ValueError('Duplicate or unexpected native loss point')
             samples = loss_native.parse_records(test['lines'], plan)
             expected = cfg.get('simulation_frequencies', cfg['frequencies'])
             if len(samples) != len(expected) or any(not math.isclose(row['frequency_Hz'], f, rel_tol=1e-12, abs_tol=0) for row,f in zip(samples,expected)):
                 raise ValueError('Native loss spectrum frequency coverage differs')
             pairs.setdefault(index,{})[test['test']] = samples
-        if set(pairs) != set(cfg['codes']) or any(set(v) != {'CAP_SP','CAP_LOSS_CM'} for v in pairs.values()): raise ValueError('Missing native loss excitation or point')
-        return {str(index):loss_native.combine_records(rows['CAP_SP'],rows['CAP_LOSS_CM'],plan) for index,rows in pairs.items()}
+        names = [t for t, mode in loss_tests(cfg)]
+        if set(pairs) != set(cfg['codes']) or any(set(v) != set(names) for v in pairs.values()): raise ValueError('Missing native loss excitation or point')
+        return {str(index):loss_native.combine_records(rows['CAP_SP'],rows['CAP_LOSS_CM'],plan,
+                                                       [rows[n] for n in names[2:]]) for index,rows in pairs.items()}
 
     @staticmethod
     def read_results(path, cfg):
@@ -1153,7 +1189,7 @@ maeSaveSetup(?session s) maeCloseSession(?session s)
                     tests[-1]['outputs'][json.loads(fields[1])] = float(fields[3])
                 except ValueError:
                     pass
-            elif fields[0] == 'SPECTRUM' and tests and active:
+            elif fields[0] in ('SPECTRUM', 'SPECTRUM4') and tests and active:
                 tests[-1]['samples'].append(tuple(float(value) for value in fields[1:]))
         expected = cfg.get('simulation_frequencies', cfg['frequencies'])
         rows, seen = [], set()
@@ -1177,6 +1213,22 @@ maeSaveSetup(?session s) maeCloseSession(?session s)
             if len(samples) != len(expected) or any(not math.isclose(a[0], b, rel_tol=1e-12, abs_tol=0) for a, b in zip(samples, expected)):
                 raise RuntimeError('Saved spectrum does not cover all requested simulation frequencies.')
             for sample in samples:
+                if cfg.get('port2'):
+                    if len(sample) != 33 or not all(math.isfinite(v) for v in sample):
+                        raise RuntimeError('Saved spectrum is missing its complete 4-port (port 1 + port 2) matrix.')
+                    from .twoport import row_fields
+                    full = [[complex(sample[1 + 8*i + 2*j], sample[2 + 8*i + 2*j]) for j in range(4)] for i in range(4)]
+                    row = dict(identity)
+                    try:
+                        row.update(row_fields(full))
+                    except ValueError as ex:
+                        raise RuntimeError(str(ex))
+                    split = decompose(*([complex(row['Y{}_G_S'.format(ij)], row['Y{}_B_S'.format(ij)]) for ij in ('11', '12', '21', '22')] + [sample[0]]))
+                    if split['total'] is None:
+                        raise RuntimeError('Port-1 matrix (port 2 open) has no identified floating total: '+split['message'])
+                    row.update(frequency_Hz=sample[0], G_S=split['total']['G_S'], B_S=split['total']['B_S'])
+                    rows.append(row)
+                    continue
                 if len(sample) != (11 if cfg.get('decomposition') else 3):
                     raise RuntimeError('Saved spectrum is missing its complete two-port matrix.' if cfg.get('decomposition') else 'Saved single-port spectrum has unexpected fields.')
                 freq, g, b = sample[:3]
