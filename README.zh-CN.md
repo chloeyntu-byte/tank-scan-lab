@@ -120,9 +120,20 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 - 用户工作簿可能包含本地路径、库身份及结果，分享前自行检查。运行状态放在被忽略的 `.work/`、`runs/` 中；Z11 另有自身保存状态。
 - 工具不做 DRC/LVS 签核。Touchstone 导入支持指定的全矩阵 ASCII S 参数格式；不支持的关键字、已被修改的源文件会被拒绝。
 
+## 未随仓库提供的内容
+
+以下内容不随本仓库提供：
+
+- 你自己的 Cadence Virtuoso、Maestro、Spectre 安装，以及库映射、器件模型和许可证。
+- 电感、变压器的提取 Touchstone 文件（`.sNp`）。本工具不调用 EMX。
+- 任何真实工艺的实测数据。示例工作簿（`examples/ideal_tank.json`、`examples/thermo8_cq.json` 等）都是合成的。
+
+需要其中某一项，或想为你的环境要一个示例，请在 [GitHub Issues](https://github.com/chloeyntu-byte/tank-scan-lab/issues) 提出，维护者会在那里回复。
+
 ## RF-FIELDWORK
 
-产品介绍页：https://rf-fieldwork.pages.dev/tank/?lang=zh（含配音演示片的工具在页面上可直接观看）
+- 总站（全部工具、演示片与项目进展）：https://rf-fieldwork.pages.dev/?lang=zh
+- 本工具介绍页（含配音演示片）：https://rf-fieldwork.pages.dev/tank/?lang=zh
 
 其他开源工具：
 

@@ -120,9 +120,20 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 - Workbook files may contain your own local paths, library identities and results. Review them before sharing. Runtime state is written into ignored `.work/` and `runs/` directories; Z11 has its own saved state.
 - The tools do not perform DRC/LVS signoff. Touchstone import accepts supported full-matrix ASCII S-parameter formats; unsupported keywords or changed files are rejected.
 
+## Not included in this repository
+
+The following are not part of this repository:
+
+- Your Cadence Virtuoso, Maestro and Spectre installation, library mappings, device models and licences.
+- Extracted Touchstone (`.sNp`) files for your inductors and transformers. EMX is not invoked by this tool.
+- Measured data from any real process. The example workbooks (`examples/ideal_tank.json`, `examples/thermo8_cq.json`, ...) are synthetic.
+
+If you need one of these, or an example for your setup, please open a [GitHub issue](https://github.com/chloeyntu-byte/tank-scan-lab/issues); the maintainer will reply there.
+
 ## RF-FIELDWORK
 
-Product page: https://rf-fieldwork.pages.dev/tank/?lang=en
+- Lab home (all tools, narrated films and progress): https://rf-fieldwork.pages.dev/?lang=en
+- This tool's page (with a narrated film): https://rf-fieldwork.pages.dev/tank/?lang=en
 
 Other open-source tools:
 
