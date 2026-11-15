@@ -1132,6 +1132,17 @@ maeSaveSetup(?session s) maeCloseSession(?session s)
             log = next((p for p in logs if p.is_file()), None)
             if not log or not re.search(r'0 errors?\b', log.read_text(errors='replace')) or 'completes' not in log.read_text(errors='replace'):
                 raise RuntimeError('Code {} has no successful zero-error Spectre completion.'.format(t['code']))
+            # Actual register values of every point, independent of the per-frequency scalars (port 2 has none).
+            if cfg.get('explicit'):
+                index=int(t['code'])
+                if not 0<=index<len(cfg['scan_points']):raise RuntimeError('Scan point identity does not match.')
+                identity={'point':index}
+                for reg in cfg['registers']:
+                    value=t['outputs'].get('REG_'+reg['id'])
+                    if value is None or value!=cfg['scan_points'][index][reg['name']]:
+                        raise RuntimeError('Actual register {} does not match the scan plan.'.format(reg['name']))
+                    identity[reg['name']]=int(value)
+            else:identity={'code':int(t['code'])}
             for idx, freq in enumerate([] if cfg.get('port2') else cfg['frequencies']):
                 outputs = t['outputs']
                 if not all('{}_{}'.format(key, idx) in outputs for key in ('C', 'G', 'B')):
@@ -1159,17 +1170,7 @@ maeSaveSetup(?session s) maeCloseSession(?session s)
                     native_q = outputs.get('Q_{}'.format(idx))
                     if native_q is None or not math.isfinite(native_q) or not math.isclose(q, native_q, rel_tol=1e-8, abs_tol=1e-20):
                         raise RuntimeError('Maestro Q does not match the saved admittance.')
-                if cfg.get('explicit'):
-                    index=int(t['code'])
-                    if not 0<=index<len(cfg['scan_points']):raise RuntimeError('Scan point identity does not match.')
-                    row={'point':index}
-                    for reg in cfg['registers']:
-                        value=outputs.get('REG_'+reg['id'])
-                        expected_code=cfg['scan_points'][index][reg['name']]
-                        if value is None or value!=expected_code:
-                            raise RuntimeError('Actual register {} does not match the scan plan.'.format(reg['name']))
-                        row[reg['name']]=int(value)
-                else:row={'code':int(t['code'])}
+                row=dict(identity)
                 row.update(frequency_Hz=freq,C_F=c,Q=q,G_S=y.real,B_S=y.imag,status=status)
                 rows.append(row)
         key='point' if cfg.get('explicit') else 'code'
